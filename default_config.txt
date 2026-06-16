@@ -3,8 +3,8 @@ fits_full = ''                    # Full Stokes IQUV cube (use this OR fits_stok
 fits_stokesQ = ''
 fits_stokesU = ''
 freqlist = ''                     # ASCII frequency list (Hz), one per line
-crop = ''                         # Optional crop "[width, height]"
-pointing = ''                     # Optional pointing centre "[x, y]"
+crop = ''                         # Optional spatial crop "[width, height]" in px; requires 'pointing' or has no effect
+pointing = ''                     # Optional crop centre "[x, y]" in px; requires 'crop' or has no effect
 
 [chunking]
 parallel = 100                    # Total SLURM array size (chunks)
