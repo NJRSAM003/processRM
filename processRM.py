@@ -514,6 +514,7 @@ def generate_submit_script(workdir, config_path):
 #SBATCH --account=__ACCOUNT__
 
 set -e
+export PYTHONDONTWRITEBYTECODE=1   # keep __pycache__ out of the workdir
 CONFIG="{os.path.basename(config_path)}"
 WORKDIR="{workdir}"
 cd "$WORKDIR"
@@ -674,6 +675,7 @@ echo "Cancel merge:          ./killJobs_merge"
 # inside the rm-env container. Matches processMeerKAT's master design.
 
 set -e
+export PYTHONDONTWRITEBYTECODE=1   # keep __pycache__ out of the workdir
 WORKDIR="{workdir}"
 cd "$WORKDIR"
 
