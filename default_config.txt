@@ -11,7 +11,8 @@ parallel = 100                    # Total SLURM array size (chunks)
 chunks = 100                      # Number of chunks to process (<= parallel)
 resume_safe = True                # Skip stages with existing output on re-run
 
-[rmsynth]                         # See rmsynth3d --help
+# See rmsynth3d --help
+[rmsynth]
 phimax = 1000                     # -l PHIMAX_RADM2: max Faraday depth (rad/m^2)
 dphi = ''                         # -d DPHI_RADM2: Faraday channel width (auto if empty)
 nsamples = ''                     # -s NSAMPLES: samples across RMSF FWHM
@@ -20,7 +21,8 @@ fit_gaussian_rmsf = False         # -t: Fit Gaussian to RMSF
 skip_rmsf = False                 # -R: Skip RMSF calculation
 super_resolution = False          # -r: Super-resolution mode
 
-[rmclean]                         # See rmclean3d --help
+# See rmclean3d --help
+[rmclean]
 threshold = 0.0000010             # -c CUTOFF: positive = Jy/beam/RMSF, negative = N-sigma (e.g. -5 for 5-sigma)
 iterations = 5000                 # -n MAXITER: max iterations per pixel
 gain = 0.1                        # -g GAIN: CLEAN loop gain
@@ -28,7 +30,8 @@ window = ''                       # -w WINDOW: windowed-clean threshold
 ncores = 1                        # --ncores: multiprocessing per task
 internal_chunk = ''               # --chunk: pixels per multiprocessing batch
 
-[slurm]                           # See processRM --help
+# See processRM --help
+[slurm]
 nodes = 1
 ntasks_per_node = 1
 cpus_per_task = 1
@@ -47,6 +50,7 @@ run_merge = True                  # Run merge stage after RM clean
 run_fits2idia = True              # Convert merged FITS to HDF5 via fits2idia
 fix_invalid_stokes = True         # Auto-fix CRVAL4=0 on FDF_tot/RMSF_tot for CARTA
 
-[run]                             # Internal variables for pipeline execution
+# Internal variables for pipeline execution
+[run]
 continue = True
 stages = ['extract', 'rmsynth', 'rmclean', 'merge']
