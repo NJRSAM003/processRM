@@ -111,7 +111,6 @@ AUX_SCRIPTS = [
 def parse_args():
     """Parse command-line arguments for processRM."""
     parser = argparse.ArgumentParser(
-        description="processRM - RM Synthesis Pipeline Orchestrator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
