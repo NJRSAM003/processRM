@@ -21,7 +21,7 @@ skip_rmsf = False                 # -R: Skip RMSF calculation
 super_resolution = False          # -r: Super-resolution mode
 
 [rmclean]                         # See rmclean3d --help
-threshold = 0.0000010             # -c CUTOFF: CLEAN cutoff (Jy/beam/RMSF)
+threshold = 0.0000010             # -c CUTOFF: positive = Jy/beam/RMSF, negative = N-sigma (e.g. -5 for 5-sigma)
 iterations = 5000                 # -n MAXITER: max iterations per pixel
 gain = 0.1                        # -g GAIN: CLEAN loop gain
 window = ''                       # -w WINDOW: windowed-clean threshold

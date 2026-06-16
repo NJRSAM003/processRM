@@ -151,10 +151,13 @@ def validate_config(filename):
         raise ValueError("Config error: parallel and chunks must be >= 1")
 
     # Validate [rmclean] section — sanity check threshold/iterations
+    # rmclean3d -c convention: positive = Jy/beam/RMSF, negative = N-sigma
+    # (e.g. -c -5 means 5-sigma threshold). Both are valid; reject only 0.
     threshold = validate_args(taskvals, 'rmclean', 'threshold', float, default=1e-6)
     iterations = validate_args(taskvals, 'rmclean', 'iterations', int, default=5000)
-    if threshold <= 0:
-        raise ValueError(f"Config error: [rmclean] threshold must be > 0 (got {threshold})")
+    if threshold == 0:
+        raise ValueError(f"Config error: [rmclean] threshold cannot be 0 "
+                         f"(use positive Jy/beam/RMSF or negative N-sigma)")
     if iterations < 1:
         raise ValueError(f"Config error: [rmclean] iterations must be >= 1 (got {iterations})")
 
