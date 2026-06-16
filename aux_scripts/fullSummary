@@ -279,14 +279,47 @@ def fmt_seconds(sec):
     return f"{m}:{s:02d}"
 
 
+_REAL_ERROR_RE = re.compile(
+    r'\b(SEVERE|ERROR|FATAL|Traceback|Segmentation fault|core dumped|'
+    r'srun: error|sbatch: error|killed|abort)\b',
+    re.IGNORECASE,
+)
+
+
+def _classify_err_file(err_file):
+    """Inspect an .err file. Returns 'error' if it has real failure markers,
+    'warn' if it only has WARN/Warning lines, None if it's empty or trivial."""
+    try:
+        size = os.path.getsize(err_file)
+    except OSError:
+        return None
+    if size < 50:
+        return None
+    try:
+        with open(err_file, 'r', errors='replace') as f:
+            content = f.read(50000)  # cap
+    except OSError:
+        return None
+    if _REAL_ERROR_RE.search(content):
+        return 'error'
+    if 'WARN' in content or 'Warning' in content or 'warning' in content:
+        return 'warn'
+    # Has content but doesn't match either pattern: treat as warning to surface,
+    # but don't escalate to error.
+    return 'warn'
+
+
 def collect_errors(workdir):
-    """Walk error subdirectories and the logs/ folder for failures."""
+    """Walk error subdirectories and the logs/ folder for failures.
+    Returns (errors, warnings) - two dicts mapping stage -> list of file paths.
+    """
     errors_dir = os.path.join(workdir, 'errors')
     logs_dir = os.path.join(workdir, 'logs')
 
     by_stage = defaultdict(list)
+    warnings_by_stage = defaultdict(list)
 
-    # Organised errors directory
+    # Organised errors directory: assume the user already triaged anything in here.
     if os.path.isdir(errors_dir):
         for stage in os.listdir(errors_dir):
             stage_path = os.path.join(errors_dir, stage)
@@ -294,18 +327,27 @@ def collect_errors(workdir):
                 for err_file in glob.glob(os.path.join(stage_path, '*')):
                     by_stage[stage].append(err_file)
 
-    # Slurm .err files in logs/
+    # Slurm .err files in logs/ - inspect content to separate real errors from warnings.
     if os.path.isdir(logs_dir):
         for err_file in glob.glob(os.path.join(logs_dir, '*.err')):
-            if os.path.getsize(err_file) > 100:  # skip near-empty err files
-                if 'rmsy' in err_file:
-                    by_stage['rmsynth/rmclean'].append(err_file)
-                elif 'merge' in err_file:
-                    by_stage['merge'].append(err_file)
-                else:
-                    by_stage['unknown'].append(err_file)
+            kind = _classify_err_file(err_file)
+            if kind is None:
+                continue
+            base = os.path.basename(err_file).lower()
+            if 'rmsy' in base:
+                stage = 'rmsynth/rmclean'
+            elif 'merge' in base:
+                stage = 'merge'
+            elif 'orchestrate' in base:
+                stage = 'orchestrator'
+            else:
+                stage = 'unknown'
+            if kind == 'error':
+                by_stage[stage].append(err_file)
+            else:
+                warnings_by_stage[stage].append(err_file)
 
-    return dict(by_stage)
+    return dict(by_stage), dict(warnings_by_stage)
 
 
 # ----------------- Display -----------------
@@ -423,22 +465,32 @@ def display_summary(workdir, show_errors=False, verbose=False):
                       f"{t['skipped']:<5}{C.END}")
     print()
 
-    # Errors
+    # Errors / Warnings
     print(f"{C.BOLD}━━━ ERROR SUMMARY ━━━{C.END}")
-    errors = collect_errors(workdir)
-    if not errors:
-        print(f"  {C.GREEN}No errors detected.{C.END}")
+    errors, warnings = collect_errors(workdir)
+
+    if not errors and not warnings:
+        print(f"  {C.GREEN}No errors or warnings detected.{C.END}")
     else:
+        if not errors:
+            print(f"  {C.GREEN}No errors detected.{C.END}")
         for stage, err_files in errors.items():
-            print(f"  {C.RED}[{stage}]{C.END} {len(err_files)} error file(s)")
+            print(f"  {C.RED}[ERROR] [{stage}]{C.END} {len(err_files)} file(s)")
             if show_errors:
                 for ef in err_files[:5]:
                     print(f"     - {ef}")
                 if len(err_files) > 5:
                     print(f"     ... and {len(err_files) - 5} more")
+        for stage, warn_files in warnings.items():
+            print(f"  {C.YELLOW}[WARN]  [{stage}]{C.END} {len(warn_files)} file(s)")
+            if show_errors:
+                for wf in warn_files[:3]:
+                    print(f"     - {wf}")
+                if len(warn_files) > 3:
+                    print(f"     ... and {len(warn_files) - 3} more")
     print()
 
-    if not show_errors and any(errors.values()):
+    if not show_errors and (any(errors.values()) or any(warnings.values())):
         print(f"  {C.GREY}Run with --errors for full details.{C.END}")
     print()
 
