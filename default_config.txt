@@ -29,8 +29,8 @@ resume_safe = True                # Skip stages with existing output on re-run
 # See rmsynth3d --help
 [rmsynth]
 phimax = 1000                     # -l PHIMAX_RADM2: max Faraday depth (rad/m^2)
-dphi = ''                         # -d DPHI_RADM2: Faraday channel width (auto if empty)
-nsamples = ''                     # -s NSAMPLES: samples across RMSF FWHM
+dphi = ''                         # -d DPHI_RADM2: Faraday channel width in rad/m^2; if empty, calculated as FWHM / nsamples
+nsamples = ''                     # -s NSAMPLES: Faraday-depth pixels across FWHM of RMSF; ignored if dphi has a value
 weighttype = 'uniform'            # -w: 'uniform' (default) or 'variance' (needs noise file)
 fit_gaussian_rmsf = True          # -t: Fit Gaussian to RMSF -> writes RMSF_FWHM.fits (useful for science)
 skip_rmsf = False                 # -R: DO NOT enable - rmclean3d needs the RMSF cube to run
