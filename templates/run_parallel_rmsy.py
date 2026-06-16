@@ -53,12 +53,22 @@ def run_rmsy_job(args):
             #y_size = ((shape[1]) / n_pieces)
         # [CHANGE 2026-06-10]: Auto-calculate y_size based on image height and parallel tasks
         # Reason: Hardcoded y_size=25 doesn't scale with different image dimensions.
-        # For 6144-pixel images with parallel=100, we need y_size≈61 to cover entire image.
-        # This formula ensures all pixels are processed regardless of image size or parallel count.
         y_size = int(shape[1] / int(args.parallel))  # in [px]
         xmax = shape[0] - 1
         y1 = (shape[1]) - int(args.slurmArrayTaskId) * y_size
         y2 = (shape[1] - 1) - (int(args.slurmArrayTaskId) - 1) * y_size
+
+        # [CHANGE 2026-06-16]: Last chunk absorbs the y residual to prevent spatial offset
+        # Reason: When shape[1] is not divisible by parallel, int(shape[1]/parallel)
+        # truncates and the bottom (shape[1] - parallel*y_size) pixels were left
+        # unchunked. The merge then placed chunks starting at output y=0, which
+        # SHIFTED the entire merged cube upward in pixel space by that residual
+        # (e.g. 44 px for a 6144-px cube with parallel=100). The merged WCS still
+        # described the original image, so the FDF cube appeared offset from
+        # Stokes I by ~66 arcsec. Forcing the bottom chunk's y1 down to 0 makes
+        # the last chunk slightly larger and covers every row.
+        if int(args.slurmArrayTaskId) == int(args.parallel):
+            y1 = 0
         reg = f"box[[0pix,{y2}pix],[{xmax}pix,{y1}pix]]"
         outfile = f"part_{args.slurmArrayTaskId}_{inputFits}"
         print(y1, y2)
