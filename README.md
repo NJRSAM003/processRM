@@ -3,7 +3,7 @@
 > **RM Synthesis Pipeline Orchestrator — integrated with ilifu**
 > Made by Amani — Made to make RM-synthesis easier
 
-A config-driven RM (Faraday Rotation Measure) synthesis pipeline for the **ilifu HPC cluster**. Modelled after [processMeerKAT](https://github.com/idia-astro/pipelines), wrapping Lennart Heino's chunked RM synthesis scripts in a clean orchestration layer.
+A config-driven RM (Faraday Rotation Measure) synthesis pipeline for the **ilifu HPC cluster**. processRM is a **wrapper around the [RM-Tools](https://github.com/CIRADA-Tools/RM-Tools) package by CIRADA**, optimised for true SLURM-array parallelism on ilifu compute nodes (the base RM-Tools workflow assumes a single-machine multiprocessing model).
 
 ---
 
@@ -89,5 +89,6 @@ See [`default_config.txt`](default_config.txt) for the fully-annotated reference
 
 ## Credits
 
+- **[RM-Tools](https://github.com/CIRADA-Tools/RM-Tools) by CIRADA** — the underlying `rmsynth3d` / `rmclean3d` binaries that processRM wraps. processRM does not reimplement the science; it orchestrates RM-Tools for HPC use.
 - **processMeerKAT** team at IDIA — Similar Architecture in comparison to the [processMeerKAT pipeline](https://github.com/idia-astro/pipelines) built by IDIA
 - **Lennart Heino** — the foundational code for compatibility with parallelism on the ilifu cluster
