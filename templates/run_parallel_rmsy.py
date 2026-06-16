@@ -7,28 +7,8 @@ from astropy.wcs import WCS
 import matplotlib.pyplot as plt
 import numpy as np
 
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
-# The sbatch file below is needed along this python file
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
-'''
-#!/bin/bash
-#SBATCH --array=1-31%31
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=20GB
-#SBATCH --job-name=cube_split
-#SBATCH --output=logs/cube_split-%A-%a.out
-#SBATCH --error=logs/cube_split-%A-%a.err
-#SBATCH --partition=Main
-#SBATCH --time=01:00:00
-#SBATCH --account=b09-mightee-ag
-
-cat /etc/hostname
-
-singularity --quiet exec /users/lennart/container/meerkat-pol.simg python3 /users/lennart/software/beta/mightee_pol/cube_split.py --slurmArrayTaskId ${SLURM_ARRAY_TASK_ID}
-'''
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+# run_parallel_rmsy.py generates run_parallel_rmsy.sbatch (--createSbatch)
+# and is also re-invoked by SLURM inside the array tasks (--slurmArrayTaskId). 
 
 def run_rmsy_job(args):
     from casatools import image as IA
