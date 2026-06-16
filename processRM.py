@@ -16,8 +16,8 @@ Modeled after processMeerKAT.
 
 Usage:
   Generate a new config (you provide FITS file(s) + freq list):
-    processRM -F NGC1097_contcube.fits -f NGC1097_contcube.freqlist.txt
-    processRM -F "NGC1097.stokesQ.fits NGC1097.stokesU.fits" -f freqs.txt
+    processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
+    processRM -F "mycube.stokesQ.fits mycube.stokesU.fits" -f freqs.txt
 
   Run an existing config:
     processRM -C myconfig.txt
@@ -115,19 +115,19 @@ def parse_args():
         epilog="""
 Examples:
   # Build a config from a full Stokes cube and frequency list
-  processRM -F NGC1097_contcube.fits -f NGC1097.freqlist.txt
+  processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
 
   # Build a config from separate Q and U cubes
-  processRM -F "NGC1097.stokesQ.fits NGC1097.stokesU.fits" -f freqs.txt
+  processRM -F "mycube.stokesQ.fits mycube.stokesU.fits" -f freqs.txt
 
   # Use an existing config file (no Stokes extraction)
   processRM -C myconfig.txt
 
   # Build config AND submit pipeline immediately
-  processRM -F NGC1097_contcube.fits -f freqs.txt -s
+  processRM -F mycube_IQUV.fits -f freqs.txt -s
 
   # Specify number of chunks (must be <= parallel in config)
-  processRM -F NGC1097_contcube.fits -f freqs.txt --chunks 50
+  processRM -F mycube_IQUV.fits -f freqs.txt --chunks 50
         """
     )
 
@@ -135,8 +135,8 @@ Examples:
                         help='Path to existing config file')
     parser.add_argument('-F', '--fitsfile',
                         help='Path to FITS cube(s). Single full-Stokes IQUV cube '
-                             '(e.g. NGC1097_contcube.IQUV.fits) OR two files in quotes '
-                             '(e.g. "NGC1097.stokesQ.fits NGC1097.stokesU.fits")')
+                             '(e.g. mycube_IQUV.fits) OR two files in quotes '
+                             '(e.g. "mycube.stokesQ.fits mycube.stokesU.fits")')
     parser.add_argument('-f', '--freqlist',
                         help='Path to frequency list (.txt). Required if -F is used.')
     parser.add_argument('-s', '--submit', action='store_true',

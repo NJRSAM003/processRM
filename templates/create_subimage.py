@@ -221,10 +221,10 @@ def main():
         epilog="""
 Examples:
   # Extract Stokes I, Q, U from a full cube
-  ./create_subimage.py --inputcube NGC1097_contcube.fits
+  ./create_subimage.py --inputcube mycube_IQUV.fits
 
   # Extract with crop region (800x800 pixels) around specific pointing
-  ./create_subimage.py --inputcube NGC1097_contcube.fits --crop "[800, 800]" --pointing "[3072, 3072]"
+  ./create_subimage.py --inputcube mycube_IQUV.fits --crop "[800, 800]" --pointing "[3072, 3072]"
         """
     )
 

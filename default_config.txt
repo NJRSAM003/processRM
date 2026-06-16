@@ -24,13 +24,13 @@
 [data]
 # CASE A: Full Stokes cube (contains I, Q, U planes) — pipeline will
 #         auto-extract Stokes Q and U into separate FITS files.
-#   fits_full   = '/idia/projects/.../NGC1097_contcube.fits'
+#   fits_full   = '/idia/projects/.../mycube_IQUV.fits'
 #   fits_stokesQ = ''
 #   fits_stokesU = ''
 # CASE B: Already-split Q and U cubes — pipeline skips extraction.
 #   fits_full   = ''
-#   fits_stokesQ = '/idia/projects/.../NGC1097.stokesQ.fits'
-#   fits_stokesU = '/idia/projects/.../NGC1097.stokesU.fits'
+#   fits_stokesQ = '/idia/projects/.../mycube.stokesQ.fits'
+#   fits_stokesU = '/idia/projects/.../mycube.stokesU.fits'
 fits_full = ''
 fits_stokesQ = ''
 fits_stokesU = ''

@@ -300,10 +300,10 @@ def main():
         epilog="""
 Examples:
   # Create sbatch file to merge all parts (run this first)
-  ./merge_image_parts.py --inputcube NGC1097_contcube.fits
+  ./merge_image_parts.py --inputcube mycube_IQUV.fits
 
   # Run as individual array task (called by SLURM)
-  ./merge_image_parts.py --inputcube NGC1097_contcube.fits --slurmArrayTaskId 1
+  ./merge_image_parts.py --inputcube mycube_IQUV.fits --slurmArrayTaskId 1
         """
     )
 

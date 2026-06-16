@@ -96,8 +96,8 @@ cd /idia/projects/<your-project>/<your-workdir>
 Either pass a full Stokes cube **or** separated Q + U cubes, plus a frequency list:
 
 ```bash
-processRM -F NGC1097_contcube.fits \
-          -f NGC1097_contcube.freqlist.txt \
+processRM -F mycube_IQUV.fits \
+          -f mycube.freqlist.txt \
           --chunks 100
 ```
 

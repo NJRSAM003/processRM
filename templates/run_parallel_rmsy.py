@@ -217,8 +217,8 @@ def main():
         epilog="""
 Examples:
   # Create sbatch file with 100 parallel tasks
-  ./run_parallel_rmsy.py --parallel 100 --inputFitsStokesQ NGC1097_contcube.stokesQ.fits \\
-    --inputFitsStokesU NGC1097_contcube.stokesU.fits --freqList NGC1097_contcube.freqlist.txt \\
+  ./run_parallel_rmsy.py --parallel 100 --inputFitsStokesQ mycube.stokesQ.fits \\
+    --inputFitsStokesU mycube.stokesU.fits --freqList mycube.freqlist.txt \\
     --rmsyCleanThrethold 0.0000010 --rmsyCleanIterations 50 --account b234-llus-ag --createSbatch
 
   # Submit the SLURM job (after creating sbatch)
@@ -226,8 +226,8 @@ Examples:
 
   # Run a single job array task (called by SLURM, not manually)
   ./run_parallel_rmsy.py --parallel 100 --slurmArrayTaskId 1 \\
-    --inputFitsStokesQ NGC1097_contcube.stokesQ.fits --inputFitsStokesU NGC1097_contcube.stokesU.fits \\
-    --freqList NGC1097_contcube.freqlist.txt
+    --inputFitsStokesQ mycube.stokesQ.fits --inputFitsStokesU mycube.stokesU.fits \\
+    --freqList mycube.freqlist.txt
         """
     )
 

@@ -221,10 +221,10 @@ def main():
         epilog="""
 Examples:
   # Extract Stokes I subset for RM synthesis testing
-  ./create_subimage_rmsy_cube.py --inputcube NGC1097_contcube.fits
+  ./create_subimage_rmsy_cube.py --inputcube mycube_IQUV.fits
 
   # Extract with crop and pointing
-  ./create_subimage_rmsy_cube.py --inputcube NGC1097_contcube.fits --crop "[800, 800]" --pointing "[3072, 3072]"
+  ./create_subimage_rmsy_cube.py --inputcube mycube_IQUV.fits --crop "[800, 800]" --pointing "[3072, 3072]"
         """
     )
 
