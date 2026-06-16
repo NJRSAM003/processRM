@@ -109,7 +109,14 @@ def cancelled_stages_from_sacct():
     cancelled = set()
 
     # Step 1: collect job-name prefixes that have anything active right now
-    active_names = {j['name'].split('_')[0] for j in squeue_for_user()}
+    queued_jobs = squeue_for_user()
+    active_names = {j['name'].split('_')[0] for j in queued_jobs}
+    # If the orchestrator is queued or running, sub-jobs (rmsy/merge) are
+    # about to be sub-submitted — don't paint them orange because of an
+    # old CANCELLED entry from yesterday's run.
+    orchestrator_active = any(
+        'orchestrate' in j['name'].lower() for j in queued_jobs
+    )
 
     # Step 2: walk last 24h of sacct, keeping only the LATEST state per name
     latest_state = {}
@@ -148,6 +155,9 @@ def cancelled_stages_from_sacct():
             continue
         # Skip if a job with this name is active again — fresh run started
         if name in active_names or any(name in a or a in name for a in active_names):
+            continue
+        # Skip if the orchestrator is queued/running — sub-jobs are imminent
+        if orchestrator_active:
             continue
         n = name.lower()
         if 'orchestrate' in n:
