@@ -502,6 +502,23 @@ CONFIG="{os.path.basename(config_path)}"
 WORKDIR="{workdir}"
 cd "$WORKDIR"
 
+# Refuse to run on login/transfer nodes — singularity exec is blocked there
+# (errors with 'Permission denied' / 'Bad file descriptor' on user namespaces).
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
+case "$HOSTNAME_SHORT" in
+    slurm-login*|transfer*|login*)
+        echo "ERROR: submit_pipeline.sh cannot run on the login/transfer node ($HOSTNAME_SHORT)."
+        echo "       ilifu blocks 'singularity exec' there, so the Stokes extraction step"
+        echo "       and the sbatch-generation calls will fail."
+        echo ""
+        echo "       Grab a compute session first, then re-run:"
+        echo "           small-sesh"
+        echo "           cd $WORKDIR"
+        echo "           ./submit_pipeline.sh"
+        exit 1
+        ;;
+esac
+
 echo "=================================================="
 echo "  processRM Pipeline Submission"
 echo "=================================================="
