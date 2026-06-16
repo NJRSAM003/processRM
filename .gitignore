@@ -7,9 +7,10 @@ __pycache__/
 .Python
 *.so
 
-# Containers (too large for git)
+# Container artifacts and recipe (maintainer-only files)
 container/*.sif
 container/*.simg
+container/*.def
 
 # Pipeline-generated outputs (never commit run artifacts)
 processing/

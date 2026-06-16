@@ -65,17 +65,3 @@ singularity exec ~/processRM/container/rm-env.sif fits2idia --help
 
 `singularity inspect` works on the login node; the `singularity exec` calls must run on a compute node (use `small-sesh` or similar).
 
----
-
-## (Maintainers only) Rebuilding the container
-
-Most users will never do this. ilifu does **not** allow `singularity build` (no sudo, no fakeroot support, login/transfer nodes block it outright), so you must build elsewhere:
-
-```bash
-sudo singularity build rm-env.sif rm-env.def              # local Linux machine with sudo
-# OR
-singularity remote login && \
-singularity build --remote rm-env.sif rm-env.def          # Sylabs Cloud, no local install
-```
-
-Then attach the new `rm-env.sif` to a new GitHub Release (drag-drop in the Release UI).

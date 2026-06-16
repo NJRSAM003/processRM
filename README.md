@@ -36,7 +36,6 @@ processRM/
 ├── aux_scripts/
 │   └── fullSummary           # Status monitor
 └── container/                # Singularity container
-    ├── rm-env.def             # Build recipe (rarely touched)
     ├── download_container.sh  # Fetches rm-env.sif from GitHub Release
     └── README.md
 ```
