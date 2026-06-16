@@ -136,7 +136,10 @@ Examples:
     parser.add_argument('-F', '--fitsfile',
                         help='Path to FITS cube(s). Single full-Stokes IQUV cube '
                              '(e.g. mycube_IQUV.fits) OR two files in quotes '
-                             '(e.g. "mycube.stokesQ.fits mycube.stokesU.fits")')
+                             '(e.g. "mycube.stokesQ.fits mycube.stokesU.fits"). '
+                             'Relative or absolute paths are fine — processRM will '
+                             'symlink them into the current directory so all outputs '
+                             'land here.')
     parser.add_argument('-f', '--freqlist',
                         help='Path to frequency list (.txt). Required if -F is used.')
     parser.add_argument('-s', '--submit', action='store_true',
@@ -213,6 +216,42 @@ def validate_ilifu_path(path, label="file"):
         logger.warning("     Expected location like /idia/projects/... or /users/...")
 
 
+def link_into_workdir(src_path, workdir, label="file"):
+    """
+    Ensure src_path is accessible by basename inside workdir.
+    Returns the basename to use in the config.
+
+    Pipeline scripts (run_parallel_rmsy.py / create_subimage.py) embed the input
+    filename into chunk filenames (e.g. processing/part_1_<input>.im). If the
+    user passes '../foo.fits' or an absolute path, that breaks. We sidestep this
+    by symlinking the real file into workdir under its basename, and storing only
+    the basename in the config. The pipeline then sees a simple local filename
+    while the user keeps their data wherever it actually lives.
+    """
+    src_abs = os.path.abspath(src_path)
+    basename = os.path.basename(src_abs)
+    dst = os.path.join(workdir, basename)
+
+    if os.path.abspath(dst) == src_abs:
+        # Already in workdir — nothing to do
+        return basename
+
+    if os.path.lexists(dst):
+        # Existing entry. If it's a symlink to the same target, fine; otherwise warn.
+        try:
+            if os.path.islink(dst) and os.readlink(dst) == src_abs:
+                logger.info(f"  -> {label}: existing symlink already points to {src_abs}")
+                return basename
+        except OSError:
+            pass
+        logger.warning(f"  -> {label}: '{dst}' already exists and is not our symlink; using it as-is")
+        return basename
+
+    os.symlink(src_abs, dst)
+    logger.info(f"  -> {label}: linked {dst} -> {src_abs}")
+    return basename
+
+
 def build_config_from_args(args, workdir):
     """
     Build a new config file based on -F (FITS file) and -f (freq list) arguments.
@@ -235,19 +274,23 @@ def build_config_from_args(args, workdir):
     fits_u = ''
 
     if len(fits_files) == 1:
-        fits_full = os.path.abspath(fits_files[0])
-        if not os.path.exists(fits_full):
-            logger.error(f"ERROR: FITS file not found: {fits_full}")
+        fits_full_abs = os.path.abspath(fits_files[0])
+        if not os.path.exists(fits_full_abs):
+            logger.error(f"ERROR: FITS file not found: {fits_full_abs}")
             sys.exit(1)
-        validate_ilifu_path(fits_full, label="fits_full")
+        validate_ilifu_path(fits_full_abs, label="fits_full")
+        # Link into workdir so pipeline scripts can reference by basename
+        fits_full = link_into_workdir(fits_full_abs, workdir, label="fits_full")
     elif len(fits_files) == 2:
-        fits_q = os.path.abspath(fits_files[0])
-        fits_u = os.path.abspath(fits_files[1])
-        for f in [fits_q, fits_u]:
+        fits_q_abs = os.path.abspath(fits_files[0])
+        fits_u_abs = os.path.abspath(fits_files[1])
+        for f in [fits_q_abs, fits_u_abs]:
             if not os.path.exists(f):
                 logger.error(f"ERROR: FITS file not found: {f}")
                 sys.exit(1)
             validate_ilifu_path(f, label="fits_stokesQ/U")
+        fits_q = link_into_workdir(fits_q_abs, workdir, label="fits_stokesQ")
+        fits_u = link_into_workdir(fits_u_abs, workdir, label="fits_stokesU")
     else:
         logger.error(
             "ERROR: -F expects 1 file (full Stokes cube) or 2 files (Q U). "
@@ -255,7 +298,8 @@ def build_config_from_args(args, workdir):
         )
         sys.exit(1)
 
-    freqlist = os.path.abspath(args.freqlist)
+    freqlist_abs = os.path.abspath(args.freqlist)
+    freqlist = link_into_workdir(freqlist_abs, workdir, label="freqlist")
 
     # Copy default config to workdir
     config_path = os.path.join(workdir, 'myconfig.txt')
