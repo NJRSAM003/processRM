@@ -1,3 +1,18 @@
+# ----------------------------------------------------------------------
+# processRM default configuration
+#
+# These defaults assume you want CLEAN FDF cubes ready for CARTA:
+#   1. Extract Stokes Q/U   (or use already-split cubes)
+#   2. rmsynth3d            -> dirty FDF + RMSF + (RMSF FWHM map)
+#   3. rmclean3d            -> CLEAN FDF cubes
+#   4. Merge chunks         -> full-size FITS cubes
+#   5. fits2idia            -> HDF5 cubes, openable in CARTA
+#
+# Leave the defaults if that workflow is what you want. Tweak individual
+# parameters only if you have a reason — every flag below corresponds to
+# an rmsynth3d / rmclean3d option (see comments).
+# ----------------------------------------------------------------------
+
 [data]
 fits_full = ''                    # Full Stokes IQUV cube (use this OR fits_stokesQ + fits_stokesU)
 fits_stokesQ = ''
@@ -16,19 +31,19 @@ resume_safe = True                # Skip stages with existing output on re-run
 phimax = 1000                     # -l PHIMAX_RADM2: max Faraday depth (rad/m^2)
 dphi = ''                         # -d DPHI_RADM2: Faraday channel width (auto if empty)
 nsamples = ''                     # -s NSAMPLES: samples across RMSF FWHM
-weighttype = 'uniform'            # -w: 'uniform' or 'variance'
-fit_gaussian_rmsf = False         # -t: Fit Gaussian to RMSF
-skip_rmsf = False                 # -R: Skip RMSF calculation
-super_resolution = False          # -r: Super-resolution mode
+weighttype = 'uniform'            # -w: 'uniform' (default) or 'variance' (needs noise file)
+fit_gaussian_rmsf = True          # -t: Fit Gaussian to RMSF -> writes RMSF_FWHM.fits (useful for science)
+skip_rmsf = False                 # -R: DO NOT enable - rmclean3d needs the RMSF cube to run
+super_resolution = False          # -r: Rudnick & Cotton mode (sharper phi, bigger cubes, slower)
 
 # See rmclean3d --help
 [rmclean]
 threshold = 0.0000010             # -c CUTOFF: positive = Jy/beam/RMSF, negative = N-sigma (e.g. -5 for 5-sigma)
-iterations = 5000                 # -n MAXITER: max iterations per pixel
-gain = 0.1                        # -g GAIN: CLEAN loop gain
-window = ''                       # -w WINDOW: windowed-clean threshold
-ncores = 1                        # --ncores: multiprocessing per task
-internal_chunk = ''               # --chunk: pixels per multiprocessing batch
+iterations = 5000                 # -n MAXITER: max iterations per pixel (raise to 100000 for science-grade deep clean)
+gain = 0.1                        # -g GAIN: CLEAN loop gain (rmclean3d default; lower = safer, slower)
+window = ''                       # -w WINDOW: windowed-clean threshold (advanced, leave empty)
+ncores = 1                        # --ncores: multiprocessing per task (also bump slurm.cpus_per_task)
+internal_chunk = ''               # --chunk: pixels per multiprocessing batch (only if ncores > 1)
 
 # See processRM --help
 [slurm]
@@ -43,12 +58,13 @@ time_merge = '20:00:00'           # Walltime per merge job
 account = 'b03-idia-ag'
 casa_container = '/idia/software/containers/casa-6.4.4-modular.simg'
 rm_container = ''                 # Empty = use ~/processRM/container/rm-env.sif (auto-filled by processRM)
-submit = False                    # Auto-submit after generation
+submit = False                    # Auto-submit after generation (overridden by 'processRM ... -s')
 
+# Final assembly + CARTA-ready output
 [merge]
-run_merge = True                  # Run merge stage after RM clean
-run_fits2idia = True              # Convert merged FITS to HDF5 via fits2idia
-fix_invalid_stokes = True         # Auto-fix CRVAL4=0 on FDF_tot/RMSF_tot for CARTA
+run_merge = True                  # Stitch per-chunk FDF/RMSF into full-size cubes
+run_fits2idia = True              # Convert merged FITS to HDF5 so CARTA loads fast
+fix_invalid_stokes = True         # Patch CRVAL4=0 on FDF_tot/RMSF_tot so CARTA accepts the cubes
 
 # Internal variables for pipeline execution
 [run]
