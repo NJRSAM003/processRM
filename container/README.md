@@ -5,18 +5,17 @@ This directory contains the Singularity definition and build scripts for **rm-en
 **Made by Amani — Made to make RM-synthesis easier**
 **(integrated with ilifu)**
 
-> The paths in this guide assume you cloned processRM to `~/processRM` (the path used in the main [README](../README.md) install steps). If you cloned it elsewhere, substitute that location wherever `~/processRM` appears below.
-
 ---
 
-## Why a container?
+## Important: you cannot build this container on ilifu
 
-Without a container, processRM depends on a user-specific Python venv. This is fragile because:
-- It depends on the user's home directory layout
-- It cannot be shared between users
-- Version drift between environments is hard to track
+ilifu does **not** allow `singularity build`:
+- The login & transfer nodes block it outright (`STOP !! You are trying to run Singularity on the login or transfer node`).
+- Compute nodes do not have `newuidmap` / `newgidmap`, so `--fakeroot` fails.
+- `sudo` is not available to users.
+- `--remote` requires you to have logged in to Sylabs Cloud first (no token by default).
 
-A Singularity container fixes all of this. The pipeline uses `singularity exec rm-env.sif rmsynth3d ...` and works for anyone with access to the `.sif` file.
+**The container must be built elsewhere and uploaded to ilifu.** Two options below.
 
 ---
 
@@ -29,73 +28,78 @@ A Singularity container fixes all of this. The pipeline uses `singularity exec r
 
 ---
 
-## Step 1 — Inspect your existing RM-env (optional)
+## Option A — Sylabs Cloud (recommended, no local install required)
 
-If you already have a local `RM-env` Python venv on ilifu and want to mirror its versions, run:
+This builds the container in Sylabs' cloud and gives you the `.sif` to download. You only need a working `singularity` command on **any** machine (even your laptop) to kick it off.
 
-```bash
-cd ~/processRM/container/
-./inspect_rm_env.sh
-```
-
-Copy the output and paste it into the `%post` section of `rm-env.def` if you want to pin exact versions. Skip this step if you don't have an existing venv — the container's defaults are fine.
-
----
-
-## Step 2 — Build the container
-
-```bash
-cd ~/processRM/container/
-./build_container.sh
-```
-
-The build script tries (in order):
-1. `singularity build --fakeroot rm-env.sif rm-env.def`
-2. `sudo singularity build rm-env.sif rm-env.def`
-3. `singularity build --remote rm-env.sif rm-env.def` (requires Sylabs Cloud account)
-
-On ilifu, **`--fakeroot` is usually the only option that works** (sudo isn't available; remote build requires a Sylabs account).
-
-Build typically takes 10–15 minutes.
+1. **Sign up at https://cloud.sylabs.io/** and create an access token (Account → Access Tokens → Create New Token).
+2. **Authenticate** from any machine that has singularity installed:
+   ```bash
+   singularity remote login
+   # paste your token when prompted
+   ```
+3. **Build remotely:**
+   ```bash
+   cd <wherever you cloned processRM>/container/
+   singularity build --remote rm-env.sif rm-env.def
+   ```
+4. **Upload to ilifu:**
+   ```bash
+   scp rm-env.sif amani@transfer.ilifu.ac.za:/idia/projects/<your-project>/containers/
+   ```
 
 ---
 
-## Step 3 — Move to a shared location
+## Option B — Local Linux machine with sudo
 
-Once built, move `rm-env.sif` to a path that your SLURM compute nodes can read. Anywhere under `/idia/projects/<your-project>/` or `/scratch/<user>/` works — pick whatever location matches your project's conventions:
+If you have a personal Linux machine where you can run `sudo`:
 
-```bash
-mv ~/processRM/container/rm-env.sif <destination>/rm-env.sif
-```
+1. **Install singularity-ce** following https://docs.sylabs.io/guides/latest/admin-guide/installation.html
+2. **Build locally:**
+   ```bash
+   cd <wherever you cloned processRM>/container/
+   sudo singularity build rm-env.sif rm-env.def
+   ```
+3. **Upload to ilifu:**
+   ```bash
+   scp rm-env.sif amani@transfer.ilifu.ac.za:/idia/projects/<your-project>/containers/
+   ```
 
-For example:
-
-```bash
-mv ~/processRM/container/rm-env.sif /idia/projects/<your-project>/containers/rm-env.sif
-```
+Build typically takes 10–15 minutes either way.
 
 ---
 
-## Step 4 — Point your config at it
+## Step 3 — Point your config at the uploaded container
 
 In the working-directory config file processRM generates (e.g. `myconfig.txt`), set:
 
 ```ini
 [slurm]
-rm_container = '<destination>/rm-env.sif'
+rm_container = '/idia/projects/<your-project>/containers/rm-env.sif'
 ```
 
-Use the **same absolute path** from Step 3.
+Use the **same absolute path** you uploaded to. Anywhere under `/idia/projects/<your-project>/` or `/scratch/<user>/` works.
 
 ---
 
-## Test the container
-
-From anywhere on ilifu:
+## Test the container (run this on ilifu)
 
 ```bash
-singularity exec <destination>/rm-env.sif rmsynth3d --help
-singularity exec <destination>/rm-env.sif python3 -c "import astropy; print(astropy.__version__)"
+singularity exec /idia/projects/<your-project>/containers/rm-env.sif rmsynth3d --help
+singularity exec /idia/projects/<your-project>/containers/rm-env.sif python3 -c "import astropy; print(astropy.__version__)"
 ```
 
 If both commands succeed, the container is ready and processRM will use it for every SLURM job it submits.
+
+---
+
+## Inspect an existing local RM-env (optional)
+
+If you already have a working Python venv for RM synthesis and want the container to match its versions exactly, run on the machine that has the venv:
+
+```bash
+cd <wherever you cloned processRM>/container/
+./inspect_rm_env.sh
+```
+
+Copy the pinned package list it prints, and paste it into the `%post` section of `rm-env.def` before building.
