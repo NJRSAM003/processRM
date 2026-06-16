@@ -74,7 +74,7 @@ resume_safe = True
 # ------------------------------------------------------------------
 [rmsynth]
 # -l PHIMAX_RADM2: Absolute max Faraday depth sampled, in rad/m^2.
-# Overrides automatic phi range estimation. Lennart's original used 1000.
+# Overrides automatic phi range estimation.
 # Set higher (e.g. 3000) for sources with large rotation measures.
 phimax = 1000
 
@@ -112,21 +112,20 @@ super_resolution = False
 # ------------------------------------------------------------------
 [rmclean]
 # -c CUTOFF: Initial CLEAN cutoff in flux units (Jy/beam/RMSF).
-# Lennart's original default = 1e-6. Decreasing this cleans deeper but takes
-# longer and risks cleaning noise. Increase if the dirty cube is noisy and
-# you only want to clean strong signal. For sidelobe-derived thresholding,
-# pre-compute with rmtools_calcRMSF and update this value manually.
+# Decreasing this cleans deeper but takes longer and risks cleaning noise.
+# Increase if the dirty cube is noisy and you only want to clean strong
+# signal. For sidelobe-derived thresholding, pre-compute with
+# rmtools_calcRMSF and update this value manually.
 threshold = 0.0000010
 
 # -n MAXITER: Maximum CLEAN iterations PER PIXEL.
-# Lennart's original = 5000. Increase to ~100000 for science-grade deep cleans
-# (matches the bash RM-tools pipeline). Lower iterations = faster but possibly
-# incomplete deconvolution.
+# Default 5000 is a good baseline. Increase to ~100000 for science-grade
+# deep cleans. Lower iterations = faster but possibly incomplete
+# deconvolution.
 iterations = 5000
 
 # -g GAIN: CLEAN loop gain (fraction of peak subtracted per iteration).
-# rmclean3d default is 0.1 (10% per iteration). Lennart's original code
-# does NOT pass -g, so the default 0.1 is used. Lower gain = safer but
+# rmclean3d default is 0.1 (10% per iteration). Lower gain = safer but
 # many more iterations; higher gain = faster but more risk of instability.
 gain = 0.1
 
