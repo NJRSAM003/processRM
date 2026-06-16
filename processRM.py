@@ -531,7 +531,9 @@ read_cfg () {{
     singularity exec __RM_CONTAINER__ python3 -c "
 import config_parser
 t,_ = config_parser.parse_config('$CONFIG')
-print((t.get('$1', {{}}).get('$2', '') or '').strip() or '$3')
+v = t.get('$1', {{}}).get('$2', '')
+s = '' if v is None else str(v).strip().strip(\"'\\\"\")
+print(s or '$3')
 "
 }}
 
