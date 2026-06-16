@@ -113,8 +113,6 @@ def check_ilifu_environment():
         logger.error("If you are on the login node, ensure 'bash -l' is loaded.")
         sys.exit(1)
 
-    logger.info(f"ilifu environment detected: {found[0]}")
-
 # Pipeline template scripts (copied into working dir)
 PIPELINE_SCRIPTS = [
     'create_subimage.py',
