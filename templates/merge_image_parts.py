@@ -253,7 +253,7 @@ def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa
     runner = f"singularity --quiet exec {rm_container}" if rm_container else ""
     env_export = f"export PROCESSRM_RM_CONTAINER={rm_container};" if rm_container else ""
     sbatch_content = f'''#!/bin/bash
-#SBATCH --array=1-{length_listing_basenames}%{length_listing_basenames}
+#SBATCH --array=1-{length_listing_basenames}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
