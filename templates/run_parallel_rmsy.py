@@ -120,8 +120,13 @@ def write_sbatch_file(args):
     # Reason: Long-running jobs sometimes fail or hit SLURM time limits. Re-submitting
     # the same array job now picks up where it left off instead of redoing everything.
     # Borrowed from the user's own rmtools_pipeline bash script (resume-safe design).
+    # [CHANGE 2026-06-17]: Drop the '%N' concurrent cap from --array.
+    # Reason: ilifu's QoS rejects '%100' (and any '%N' where N >= the configured
+    # MaxArrayTasksPerJob) with 'Invalid job array specification'. Without the
+    # cap, SLURM applies its own cluster-wide limit, which is what we want
+    # anyway - the user shouldn't need to second-guess the scheduler.
     sbatch_content = f'''#!/bin/bash
-#SBATCH --array=1-{args.parallel}%{args.parallel}
+#SBATCH --array=1-{args.parallel}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
