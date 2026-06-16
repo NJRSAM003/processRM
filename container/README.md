@@ -1,21 +1,15 @@
 # RM-env Singularity Container
 
-This directory contains the Singularity definition and build scripts for **rm-env.sif** — a reproducible container that bundles Python + RM-Tools for the processRM pipeline on ilifu.
+This directory holds the Singularity definition for **rm-env.sif** — the container that bundles Python + RM-Tools for the processRM pipeline on ilifu.
 
 **Made by Amani — Made to make RM-synthesis easier**
 **(integrated with ilifu)**
 
 ---
 
-## Important: you cannot build this container on ilifu
+## You do not need to build this container
 
-ilifu does **not** allow `singularity build`:
-- The login & transfer nodes block it outright (`STOP !! You are trying to run Singularity on the login or transfer node`).
-- Compute nodes do not have `newuidmap` / `newgidmap`, so `--fakeroot` fails.
-- `sudo` is not available to users.
-- `--remote` requires you to have logged in to Sylabs Cloud first (no token by default).
-
-**The container must be built elsewhere and uploaded to ilifu.** Two options below.
+A pre-built `rm-env.sif` is published with every processRM release on GitHub. **Just download it.** The build files (`rm-env.def`, `build_container.sh`, `inspect_rm_env.sh`) live here only so the container can be rebuilt or modified if needed.
 
 ---
 
@@ -23,53 +17,46 @@ ilifu does **not** allow `singularity build`:
 
 - Python 3.11
 - RM-Tools (`rmsynth3d`, `rmclean3d`)
-- numpy, scipy, astropy, matplotlib, h5py, click
-- All build dependencies (gfortran, FFTW, HDF5)
+- `fits2idia` (FITS → IDIA HDF5 for CARTA)
+- numpy, scipy, astropy, matplotlib, h5py
 
 ---
 
-## Option A — Sylabs Cloud (recommended, no local install required)
+## Step 1 — Download the container on ilifu
 
-This builds the container in Sylabs' cloud and gives you the `.sif` to download. You only need a working `singularity` command on **any** machine (even your laptop) to kick it off.
+After cloning the processRM repo, run:
 
-1. **Sign up at https://cloud.sylabs.io/** and create an access token (Account → Access Tokens → Create New Token).
-2. **Authenticate** from any machine that has singularity installed:
-   ```bash
-   singularity remote login
-   # paste your token when prompted
-   ```
-3. **Build remotely:**
-   ```bash
-   cd <wherever you cloned processRM>/container/
-   singularity build --remote rm-env.sif rm-env.def
-   ```
-4. **Upload to ilifu:**
-   ```bash
-   scp rm-env.sif amani@transfer.ilifu.ac.za:/idia/projects/<your-project>/containers/
-   ```
+```bash
+cd ~/processRM/container/
+wget https://github.com/NJRSAM003/processRM/releases/latest/download/rm-env.sif
+```
 
----
+(The `latest` URL always resolves to the most recent published release. To pin a specific version, use `releases/download/v1.0/rm-env.sif`.)
 
-## Option B — Local Linux machine with sudo
+Verify the file:
 
-If you have a personal Linux machine where you can run `sudo`:
+```bash
+ls -lh rm-env.sif
+singularity inspect rm-env.sif
+```
 
-1. **Install singularity-ce** following https://docs.sylabs.io/guides/latest/admin-guide/installation.html
-2. **Build locally:**
-   ```bash
-   cd <wherever you cloned processRM>/container/
-   sudo singularity build rm-env.sif rm-env.def
-   ```
-3. **Upload to ilifu:**
-   ```bash
-   scp rm-env.sif amani@transfer.ilifu.ac.za:/idia/projects/<your-project>/containers/
-   ```
-
-Build typically takes 10–15 minutes either way.
+You should see a ~370MB file and metadata showing `Author: Amani` etc.
 
 ---
 
-## Step 3 — Point your config at the uploaded container
+## Step 2 — Move it to a SLURM-readable location
+
+SLURM compute nodes need to be able to read the `.sif`. Anywhere under `/idia/projects/<your-project>/` or `/scratch/<user>/` works:
+
+```bash
+mv rm-env.sif /idia/projects/<your-project>/containers/rm-env.sif
+```
+
+(`/idia/software/containers/` is admin-only — don't try there.)
+
+---
+
+## Step 3 — Point your config at it
 
 In the working-directory config file processRM generates (e.g. `myconfig.txt`), set:
 
@@ -78,28 +65,36 @@ In the working-directory config file processRM generates (e.g. `myconfig.txt`), 
 rm_container = '/idia/projects/<your-project>/containers/rm-env.sif'
 ```
 
-Use the **same absolute path** you uploaded to. Anywhere under `/idia/projects/<your-project>/` or `/scratch/<user>/` works.
+That's it. Every subsequent SLURM job processRM submits will `singularity exec` this container.
 
 ---
 
-## Test the container (run this on ilifu)
+## Test the container on ilifu
 
 ```bash
 singularity exec /idia/projects/<your-project>/containers/rm-env.sif rmsynth3d --help
-singularity exec /idia/projects/<your-project>/containers/rm-env.sif python3 -c "import astropy; print(astropy.__version__)"
+singularity exec /idia/projects/<your-project>/containers/rm-env.sif rmclean3d --help
+singularity exec /idia/projects/<your-project>/containers/rm-env.sif fits2idia --help
 ```
 
-If both commands succeed, the container is ready and processRM will use it for every SLURM job it submits.
+If all three print usage text, the container is ready and processRM will use it for every SLURM job it submits.
 
 ---
 
-## Inspect an existing local RM-env (optional)
+## (Advanced) Rebuilding the container
 
-If you already have a working Python venv for RM synthesis and want the container to match its versions exactly, run on the machine that has the venv:
+You only need this if you want to add or change packages inside the container — most users will never do this.
 
-```bash
-cd <wherever you cloned processRM>/container/
-./inspect_rm_env.sh
-```
+ilifu does **not** allow `singularity build` (no sudo, no fakeroot support, login/transfer nodes block it outright). You must build elsewhere:
 
-Copy the pinned package list it prints, and paste it into the `%post` section of `rm-env.def` before building.
+- **Option A — Sylabs Cloud** (no local install needed)
+  ```bash
+  singularity remote login
+  singularity build --remote rm-env.sif rm-env.def
+  ```
+- **Option B — Local Linux machine with sudo**
+  ```bash
+  sudo singularity build rm-env.sif rm-env.def
+  ```
+
+Then attach the new `rm-env.sif` to a new GitHub Release (drag-drop in the Release UI).

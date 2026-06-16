@@ -72,16 +72,24 @@ Verify with:
 processRM --help
 ```
 
-### Step 3 — Build the rm-env Singularity container (one-time)
+### Step 3 — Download the rm-env Singularity container (one-time)
 
-This step is required only the first time. It builds the `rm-env.sif` container that holds Python + RM-Tools + dependencies. See [`container/README.md`](container/README.md) for build options (fakeroot / sudo / remote).
+The container that holds Python + RM-Tools + dependencies is pre-built and attached to every processRM release. **You do not need to build it yourself.** Just download:
 
 ```bash
 cd ~/processRM/container
-./build_container.sh
+wget https://github.com/NJRSAM003/processRM/releases/latest/download/rm-env.sif
 ```
 
-Once built, move the `.sif` to a shared project location and update `rm_container` in your config.
+Then move it to a SLURM-readable location, e.g.:
+
+```bash
+mv rm-env.sif /idia/projects/<your-project>/containers/rm-env.sif
+```
+
+Open `myconfig.txt` (created in Step 5) and set `[slurm] rm_container = '...'` to that path.
+
+See [`container/README.md`](container/README.md) for more options (pinning a specific version, rebuilding from source, etc.).
 
 ### Step 4 — Move to your working directory
 
