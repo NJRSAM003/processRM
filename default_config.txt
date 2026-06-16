@@ -41,7 +41,7 @@ super_resolution = False          # -r: Rudnick & Cotton mode (sharper phi, bigg
 threshold = 0.0000010             # -c CUTOFF: positive = Jy/beam/RMSF, negative = N-sigma (e.g. -5 for 5-sigma)
 iterations = 5000                 # -n MAXITER: max iterations per pixel (raise to 100000 for science-grade deep clean)
 gain = 0.1                        # -g GAIN: CLEAN loop gain (rmclean3d default; lower = safer, slower)
-window = ''                       # -w WINDOW: windowed-clean threshold (advanced, leave empty)
+window = ''                       # -w WINDOW: deeper masked-clean threshold in Jy/beam/RMSF; empty = single-pass clean (no second pass)
 ncores = 1                        # --ncores: multiprocessing per task (also bump slurm.cpus_per_task)
 internal_chunk = ''               # --chunk: pixels per multiprocessing batch (only if ncores > 1)
 
