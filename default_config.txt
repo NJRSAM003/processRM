@@ -1,192 +1,52 @@
-# ==================================================================
-#  processRM - Default Configuration File
-#  (integrated with ilifu - ilifu cluster ONLY)
-#  Made by Amani - Made to make RM-synthesis easier
-# ==================================================================
-# NOTE: processRM is designed exclusively for the ilifu HPC cluster.
-#       It uses ilifu-specific paths (/idia/, /users/), Singularity
-#       containers, and SLURM partitions. It will not work elsewhere.
-# ==================================================================
-#
-# This file is INI-style. All values must be valid Python literals:
-#   - Strings: in 'quotes'   e.g. 'b03-idia-ag'
-#   - Lists:   in [brackets] e.g. ['Main', 'GPU']
-#   - Numbers: bare digits   e.g. 100
-#   - Booleans: True / False (capitalised)
-#
-# Edit the file then run:  processRM -C myconfig.txt
-# ==================================================================
-
-
-# ------------------------------------------------------------------
-# [data] - Input data configuration
-# ------------------------------------------------------------------
 [data]
-# CASE A: Full Stokes cube (contains I, Q, U planes) — pipeline will
-#         auto-extract Stokes Q and U into separate FITS files.
-#   fits_full   = '/idia/projects/.../mycube_IQUV.fits'
-#   fits_stokesQ = ''
-#   fits_stokesU = ''
-# CASE B: Already-split Q and U cubes — pipeline skips extraction.
-#   fits_full   = ''
-#   fits_stokesQ = '/idia/projects/.../mycube.stokesQ.fits'
-#   fits_stokesU = '/idia/projects/.../mycube.stokesU.fits'
-fits_full = ''
+fits_full = ''                    # Full Stokes IQUV cube (use this OR fits_stokesQ + fits_stokesU)
 fits_stokesQ = ''
 fits_stokesU = ''
+freqlist = ''                     # ASCII frequency list (Hz), one per line
+crop = ''                         # Optional crop "[width, height]"
+pointing = ''                     # Optional pointing centre "[x, y]"
 
-# Frequency list: ASCII file with one frequency per line (in Hz).
-# Must have the SAME number of entries as the channel axis of your cube.
-# Mismatch -> rmsynth3d will fail with "lambda^2 vector length mismatch".
-freqlist = ''
-
-# Optional cropping (skip if you want to process the full image):
-#   crop = '[800, 800]'           # width × height in pixels
-#   pointing = '[3072, 3072]'     # central pixel (x, y) to crop around
-crop = ''
-pointing = ''
-
-
-# ------------------------------------------------------------------
-# [chunking] - How the cube is split for parallel processing
-# ------------------------------------------------------------------
 [chunking]
-# Total SLURM array size (maximum number of parallel chunks).
-# Each chunk is a horizontal strip (y_size = NAXIS2 / parallel).
-# For a 6144-pixel image with parallel=100, each strip is ~61 pixels tall.
-# Recommended: keep at 100 for typical 4K-8K cubes.
-parallel = 100
+parallel = 100                    # Total SLURM array size (chunks)
+chunks = 100                      # Number of chunks to process (<= parallel)
+resume_safe = True                # Skip stages with existing output on re-run
 
-# Number of chunks the user actually wants to process. Must be <= parallel.
-# Useful for testing on a small subset (e.g. chunks = 5 to try the pipeline).
-chunks = 100
+[rmsynth]                         # See rmsynth3d --help
+phimax = 1000                     # -l PHIMAX_RADM2: max Faraday depth (rad/m^2)
+dphi = ''                         # -d DPHI_RADM2: Faraday channel width (auto if empty)
+nsamples = ''                     # -s NSAMPLES: samples across RMSF FWHM
+weighttype = 'uniform'            # -w: 'uniform' or 'variance'
+fit_gaussian_rmsf = False         # -t: Fit Gaussian to RMSF
+skip_rmsf = False                 # -R: Skip RMSF calculation
+super_resolution = False          # -r: Super-resolution mode
 
-# Resume safety: skip stages whose output FITS already exists.
-# If a SLURM array job fails or times out, re-submit and it will pick up
-# only the unfinished chunks instead of redoing everything.
-resume_safe = True
+[rmclean]                         # See rmclean3d --help
+threshold = 0.0000010             # -c CUTOFF: CLEAN cutoff (Jy/beam/RMSF)
+iterations = 5000                 # -n MAXITER: max iterations per pixel
+gain = 0.1                        # -g GAIN: CLEAN loop gain
+window = ''                       # -w WINDOW: windowed-clean threshold
+ncores = 1                        # --ncores: multiprocessing per task
+internal_chunk = ''               # --chunk: pixels per multiprocessing batch
 
-
-# ------------------------------------------------------------------
-# [rmsynth] - rmsynth3d parameters (RM synthesis stage)
-# ------------------------------------------------------------------
-# Reference: rmsynth3d --help inside the rm-env container
-# ------------------------------------------------------------------
-[rmsynth]
-# -l PHIMAX_RADM2: Absolute max Faraday depth sampled, in rad/m^2.
-# Overrides automatic phi range estimation.
-# Set higher (e.g. 3000) for sources with large rotation measures.
-phimax = 1000
-
-# -d DPHI_RADM2: Width of Faraday depth channel, in rad/m^2.
-# Default (empty) lets rmsynth3d auto-pick based on frequency coverage.
-# Smaller values = finer phi sampling but larger output cubes.
-dphi = ''
-
-# -s NSAMPLES: Number of samples across the FWHM of the RMSF.
-# Default ~5 is sufficient for most science use cases.
-# Higher = oversampled (smoother but bigger).
-nsamples = ''
-
-# -w WEIGHTTYPE: 'uniform' (all weights = 1) or 'variance' (1/noise^2).
-# Use 'variance' if you have a noise file. Otherwise 'uniform'.
-weighttype = 'uniform'
-
-# -t: Fit a Gaussian to the RMSF [True/False].
-# Useful if you want an analytic RMSF for downstream modelling.
-fit_gaussian_rmsf = False
-
-# -R: Skip calculation of the RMSF cube [True/False].
-# Set True only if you don't need rmclean (RMSF is required for rmclean3d).
-skip_rmsf = False
-
-# -r: Super-resolution mode (Rudnick & Cotton) [True/False].
-# Optimises RMSF resolution for narrow features but is more expensive.
-super_resolution = False
-
-
-# ------------------------------------------------------------------
-# [rmclean] - rmclean3d parameters (RM-CLEAN stage)
-# ------------------------------------------------------------------
-# Reference: rmclean3d --help inside the rm-env container
-# ------------------------------------------------------------------
-[rmclean]
-# -c CUTOFF: Initial CLEAN cutoff in flux units (Jy/beam/RMSF).
-# Decreasing this cleans deeper but takes longer and risks cleaning noise.
-# Increase if the dirty cube is noisy and you only want to clean strong
-# signal. For sidelobe-derived thresholding, pre-compute with
-# rmtools_calcRMSF and update this value manually.
-threshold = 0.0000010
-
-# -n MAXITER: Maximum CLEAN iterations PER PIXEL.
-# Default 5000 is a good baseline. Increase to ~100000 for science-grade
-# deep cleans. Lower iterations = faster but possibly incomplete
-# deconvolution.
-iterations = 5000
-
-# -g GAIN: CLEAN loop gain (fraction of peak subtracted per iteration).
-# rmclean3d default is 0.1 (10% per iteration). Lower gain = safer but
-# many more iterations; higher gain = faster but more risk of instability.
-gain = 0.1
-
-# -w WINDOW: Threshold for deeper windowed clean (only used if set).
-# Leave empty to use single-cutoff CLEAN. If set (e.g. 1e-7), CLEAN
-# continues below `threshold` but only inside masked regions of signal.
-window = ''
-
-# --ncores N_CORES: Multiprocessing inside a single rmclean3d call.
-# Set > 1 only if you also bump #SBATCH --cpus-per-task in [slurm].
-# Default 1 = pure SLURM-array parallelism (one chunk per task, one core).
-ncores = 1
-
-# --chunk CHUNK: Internal pixel chunk size for rmclean3d's multiprocessing.
-# Only used when ncores > 1. The bash pipeline uses 22000.
-internal_chunk = ''
-
-
-# ------------------------------------------------------------------
-# [slurm] - SLURM job configuration (ilifu-specific)
-# ------------------------------------------------------------------
-[slurm]
-nodes = 1                         # Always 1 (each array task is single-node)
-ntasks_per_node = 1               # 1 task per chunk
-cpus_per_task = 1                 # Bump if [rmclean] ncores > 1
+[slurm]                           # See processRM --help
+nodes = 1
+ntasks_per_node = 1
+cpus_per_task = 1
 mem = 10                          # GB per RM-synth/clean task
-mem_merge = 100                   # GB per merge task (memory-hungry: combines all chunks)
-partition = 'Main'                # SLURM partition
-time = '10:00:00'                 # Walltime per chunk (HH:MM:SS)
+mem_merge = 100                   # GB per merge task
+partition = 'Main'
+time = '10:00:00'                 # Walltime per chunk
 time_merge = '20:00:00'           # Walltime per merge job
-account = 'b03-idia-ag'           # SLURM account (your project code)
-
-# Singularity containers (ilifu paths)
+account = 'b03-idia-ag'
 casa_container = '/idia/software/containers/casa-6.4.4-modular.simg'
 rm_container = '/idia/projects/uct-mega-hi/Pro_M_Prac/containers/rm-env.sif'
+submit = False                    # Auto-submit after generation
 
-# Auto-submit pipeline after generation? Overridden by '-s' flag on CLI.
-submit = False
-
-
-# ------------------------------------------------------------------
-# [merge] - Final merging/assembly settings
-# ------------------------------------------------------------------
 [merge]
-# Run the merge stage after RM synthesis + cleaning complete?
-# Set False if you only want the per-chunk FDF/RMSF outputs.
-run_merge = True
+run_merge = True                  # Run merge stage after RM clean
+run_fits2idia = True              # Convert merged FITS to HDF5 via fits2idia
+fix_invalid_stokes = True         # Auto-fix CRVAL4=0 on FDF_tot/RMSF_tot for CARTA
 
-# Convert merged FITS cubes to IDIA HDF5 format using fits2idia?
-# Required if you want to open the cubes in CARTA without slow loading.
-run_fits2idia = True
-
-# Auto-fix CRVAL4 = 0 on FDF_tot/RMSF_tot/FDF_maxPI/FDF_peakRM cubes.
-# rmsynth3d outputs these with invalid Stokes value (0), causing CARTA to
-# refuse them. The fix sets CRVAL4 = 1 (Stokes I) to make CARTA accept them.
-fix_invalid_stokes = True
-
-
-# ------------------------------------------------------------------
-# [run] - Internal pipeline execution state (do not edit by hand)
-# ------------------------------------------------------------------
-[run]
-continue = True                                       # Allow resuming from previous run
-stages = ['extract', 'rmsynth', 'rmclean', 'merge']   # Stages to execute (in order)
+[run]                             # Internal variables for pipeline execution
+continue = True
+stages = ['extract', 'rmsynth', 'rmclean', 'merge']
