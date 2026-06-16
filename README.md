@@ -89,6 +89,5 @@ MIT (TBD — confirm with collaborators)
 
 ## Credits
 
-- **Lennart Heino** — original chunked RM synthesis scripts (the foundation)
-- **processMeerKAT** team at IDIA — architectural inspiration
-- **Amani Njoroge** — pipeline orchestration, containerisation, monitoring
+- **processMeerKAT** team at IDIA — Similar Architecture in comparison to the [processMeerKAT pipeline](https://github.com/idia-astro/pipelines) built by IDIA
+- **Lennart Heino** — the foundational code for compatibility with parallelism on the ilifu cluster
