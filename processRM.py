@@ -14,15 +14,16 @@
 Modeled after processMeerKAT.
 
 Usage:
-  Generate a new config (you provide FITS file(s) + freq list):
+  BUILD a new config (you provide FITS file(s) + freq list):
     processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
     processRM -F "mycube.stokesQ.fits mycube.stokesU.fits" -f freqs.txt
+    processRM -F mycube_IQUV.fits -f freqs.txt -C run1.txt   # custom name
 
-  Run an existing config:
-    processRM -C myconfig.txt
-    processRM -C myconfig.txt -s          # auto-submit pipeline
+  RUN an existing config:
+    processRM -R myconfig.txt
+    processRM -R myconfig.txt -s          # also auto-submit
 
-After generation/setup, run:
+After build/setup, run:
     ./submit_pipeline.sh                  # submits SLURM jobs
     ./fullSummary                         # check pipeline status
 """
@@ -199,39 +200,45 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Build a config from a full Stokes cube and frequency list (named myconfig.txt by default)
+  # BUILD a config from a full Stokes cube + freq list (default name: myconfig.txt)
   processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
 
-  # Build a config with a custom name
+  # BUILD with a custom config name
   processRM -F mycube_IQUV.fits -f mycube.freqlist.txt -C run1.txt
 
-  # Build a config from separate Q and U cubes
+  # BUILD from separate Q and U cubes
   processRM -F "mycube.stokesQ.fits mycube.stokesU.fits" -f freqs.txt
 
-  # Use an existing config file (no Stokes extraction)
-  processRM -C myconfig.txt
+  # BUILD with a specific chunk count
+  processRM -F mycube_IQUV.fits -f freqs.txt --chunks 50
 
-  # Build config AND submit pipeline immediately
+  # BUILD and submit immediately
   processRM -F mycube_IQUV.fits -f freqs.txt -s
 
-  # Specify number of chunks (must be <= parallel in config)
-  processRM -F mycube_IQUV.fits -f freqs.txt --chunks 50
+  # RUN an existing config (regenerate submit_pipeline.sh from it)
+  processRM -R myconfig.txt
+
+  # RUN and submit immediately
+  processRM -R myconfig.txt -s
 """
     )
 
-    parser.add_argument('-C', '--config',
-                        help='Config file name. Without -F: load an existing config. '
-                             'With -F: name the new config (default: myconfig.txt). '
-                             'Saved to the working directory.')
     parser.add_argument('-F', '--fitsfile',
-                        help='Path to FITS cube(s). Single full-Stokes IQUV cube '
-                             '(e.g. mycube_IQUV.fits) OR two files in quotes '
+                        help='BUILD mode: path to FITS cube(s). Single full-Stokes IQUV '
+                             'cube (e.g. mycube_IQUV.fits) OR two files in quotes '
                              '(e.g. "mycube.stokesQ.fits mycube.stokesU.fits"). '
                              'Relative or absolute paths are fine — processRM will '
                              'symlink them into the current directory so all outputs '
                              'land here.')
     parser.add_argument('-f', '--freqlist',
-                        help='Path to frequency list (.txt). Required if -F is used.')
+                        help='Path to frequency list (.txt). Required when -F is used.')
+    parser.add_argument('-C', '--config',
+                        help='Optional name for the config built from -F '
+                             '(default: myconfig.txt).')
+    parser.add_argument('-R', '--run',
+                        dest='run_config',
+                        help='RUN mode: load an existing config file and regenerate '
+                             'submit_pipeline.sh from it (no FITS inputs needed).')
     parser.add_argument('-s', '--submit', action='store_true',
                         help='Auto-submit the pipeline after generation')
     parser.add_argument('--chunks', type=int,
@@ -669,19 +676,25 @@ def main():
     logger.info(f"Working directory: {workdir}")
     print()
 
-    # -C alone: load an existing config file
-    # -F alone: build a new 'myconfig.txt' from CLI args
-    # -F with -C: build a new config with the user-chosen name
+    # Mode selection:
+    #   -F builds a new config from FITS inputs (-C optional, names it)
+    #   -R runs an existing config (regenerates submit_pipeline.sh from it)
+    # The two modes are mutually exclusive.
+    if args.fitsfile and args.run_config:
+        logger.error("Cannot use -F (build) and -R (run) at the same time.")
+        sys.exit(1)
+
     if args.fitsfile:
         config_path = build_config_from_args(args, workdir)
-    elif args.config:
-        config_path = os.path.abspath(args.config)
+    elif args.run_config:
+        config_path = os.path.abspath(args.run_config)
         if not os.path.exists(config_path):
             logger.error(f"Config file not found: {config_path}")
             sys.exit(1)
-        logger.info(f"Using config: {config_path}")
+        logger.info(f"Running with config: {config_path}")
     else:
-        logger.error("Must provide either -C (existing config file) or -F (FITS file).")
+        logger.error("Must provide either -F (build mode) or -R (run mode).")
+        logger.error("Try 'processRM --help' for examples.")
         sys.exit(1)
 
     # Validate config
