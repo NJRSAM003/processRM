@@ -590,29 +590,60 @@ echo "[Stage 3] Submitting RM synthesis array job..."
 SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | awk '{{print $4}}')
 echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY"
 
-# Stage 4: Generate merge sbatch, then sub-submit with dependency on Stage 3
+# Stage 4: Write a "merge prep" SLURM job that depends on Stage 3 finishing.
+# We CANNOT generate merge_image_parts.sbatch right now because processing/
+# is still empty - merge_image_parts.py's write_sbatch_file would render
+# '--array=1-0' which sbatch rejects as Invalid job array specification.
+# The prep job runs AFTER the RM-synth array completes, when processing/ is
+# populated, generates the proper merge sbatch, and sub-submits it.
 echo ""
-echo "[Stage 4] Generating merge_image_parts.sbatch..."
+echo "[Stage 4] Writing merge-prep sbatch (will run after $SLURMID_RMSY)..."
 INPUT_CUBE="${{FITS_FULL:-$FITS_Q}}"
+cat > merge_prep.sbatch <<MPEOF
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4GB
+#SBATCH --job-name=merge_prep
+#SBATCH --output=logs/merge_prep-%j.out
+#SBATCH --error=logs/merge_prep-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=00:30:00
+#SBATCH --account=$ACCOUNT
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+cd "$WORKDIR"
+
+echo "[merge_prep] Generating merge_image_parts.sbatch from populated processing/..."
 singularity --quiet exec "$RM_CONTAINER" python3 -c "
-import os, sys
+import sys
 sys.path.insert(0, '.')
 import merge_image_parts as m
-class A:
-    inputcube='$INPUT_CUBE'
-    account='$ACCOUNT'
-    rmContainer='$RM_CONTAINER'
-    casaContainer='$CASA_CONTAINER'
-m.write_sbatch_file(A.inputcube, account=A.account, rm_container=A.rmContainer, casa_container=A.casaContainer)
+m.write_sbatch_file('$INPUT_CUBE',
+                    account='$ACCOUNT',
+                    rm_container='$RM_CONTAINER',
+                    casa_container='$CASA_CONTAINER')
 "
 
 if [ -f merge_image_parts.sbatch ]; then
-    SLURMID_MERGE=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_image_parts.sbatch | awk '{{print $4}}')
-    echo "  -> Merge: SLURM job $SLURMID_MERGE (depends on $SLURMID_RMSY)"
+    SLURMID_MERGE=\$(sbatch merge_image_parts.sbatch | awk '{{print \$4}}')
+    echo "[merge_prep] Submitted merge array: \$SLURMID_MERGE"
+    # Refresh per-stage kill scripts now that we finally know the merge ID
+    cat > killJobs_merge <<EOF2
+#!/bin/bash
+echo "Cancelling \$SLURMID_MERGE (merge array)"
+scancel \$SLURMID_MERGE
+EOF2
+    chmod +x killJobs_merge
 else
-    echo "  WARNING: merge sbatch was not written; merge stage skipped."
-    SLURMID_MERGE=""
+    echo "[merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
+MPEOF
+SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_prep.sbatch | awk '{{print $4}}')
+echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
+SLURMID_MERGE="$SLURMID_MERGEPREP"  # used for the killJobs scripts below until prep runs
 
 # Generate per-stage killJobs helpers (now that we know all the IDs)
 write_kill () {{
