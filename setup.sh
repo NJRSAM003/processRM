@@ -57,7 +57,6 @@ else
 
 # processRM setup (integrated with ilifu) - Made by Amani
 export PROCESSRM_DIR="$PROCESSRM_DIR"
-export PATH="\$PROCESSRM_DIR:\$PATH"
 alias processRM="\$PROCESSRM_DIR/processRM.py"
 EOF
     echo "  -> Added processRM to $SHELL_RC"
