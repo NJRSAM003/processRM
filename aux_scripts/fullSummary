@@ -2,8 +2,7 @@
 """
 ==================================================================
   fullSummary - processRM Pipeline Status Monitor
-  (integrated with ilifu)
-  Made by Amani - Made to make RM-synthesis easier
+  RM-synthesis made simple
 ==================================================================
 
 Displays the current state of an active processRM pipeline:
@@ -252,8 +251,8 @@ def display_summary(workdir, show_errors=False):
     """Display the pipeline summary."""
     print(f"{C.BOLD}{C.CYAN}")
     print("=" * 70)
-    print("  processRM Pipeline Status  (integrated with ilifu)")
-    print("  Made by Amani - Made to make RM-synthesis easier")
+    print("  processRM Pipeline Status ")
+    print("  RM-synthesis made simple")
     print("=" * 70)
     print(f"{C.END}")
     print(f"  Workdir:    {workdir}")

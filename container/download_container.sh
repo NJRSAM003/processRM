@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==================================================================
 #  download_container.sh - Fetch the latest rm-env.sif from GitHub
-#  Made by Amani - Made to make RM-synthesis easier
+#  RM-synthesis made simple
 # ==================================================================
 #
 # Downloads the prebuilt rm-env.sif container from the latest published

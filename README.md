@@ -1,7 +1,7 @@
 # processRM
 
-> **RM Synthesis Pipeline Orchestrator — integrated with ilifu**
-> Made by Amani — Made to make RM-synthesis easier
+> **RM Synthesis Pipeline Orchestrator**
+> RM-synthesis made simple
 
 A config-driven RM (Faraday Rotation Measure) synthesis pipeline for the **ilifu HPC cluster**. processRM is a **wrapper around the [RM-Tools](https://github.com/CIRADA-Tools/RM-Tools) package by CIRADA**, optimised for true SLURM-array parallelism on ilifu compute nodes (the base RM-Tools workflow assumes a single-machine multiprocessing model).
 

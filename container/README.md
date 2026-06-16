@@ -2,8 +2,7 @@
 
 This directory holds the Singularity definition and helper script for **rm-env.sif** — the container that bundles Python + RM-Tools for the processRM pipeline on ilifu.
 
-**Made by Amani — Made to make RM-synthesis easier**
-**(integrated with ilifu)**
+**RM-synthesis made simple**
 
 ---
 

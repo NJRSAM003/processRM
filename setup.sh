@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==================================================================
-#  processRM Setup Script (integrated with ilifu)
-#  Made by Amani - Made to make RM-synthesis easier
+#  processRM Setup Script
+#  RM-synthesis made simple
 # ==================================================================
 #
 # This script adds processRM to your PATH so it can be invoked
@@ -32,8 +32,8 @@ else
 fi
 
 echo "=================================================="
-echo "  processRM Setup (integrated with ilifu)"
-echo "  Made by Amani - Made to make RM-synthesis easier"
+echo "  processRM Setup"
+echo "  RM-synthesis made simple"
 echo "=================================================="
 echo ""
 echo "Install location: $PROCESSRM_DIR"
@@ -55,7 +55,7 @@ if grep -q "# processRM setup" "$SHELL_RC" 2>/dev/null; then
 else
     cat >> "$SHELL_RC" <<EOF
 
-# processRM setup (integrated with ilifu) - Made by Amani
+# processRM setup
 export PROCESSRM_DIR="$PROCESSRM_DIR"
 alias processRM="\$PROCESSRM_DIR/processRM.py"
 EOF

@@ -8,8 +8,7 @@
   |_|   |_|  \\___/ \\___\\___||___/___/_| \\_\\_|  |_|
 
   processRM - RM Synthesis Pipeline Orchestrator
-  (integrated with ilifu)
-  Made by Amani - Made to make RM-synthesis easier
+  RM-synthesis made simple
 ==================================================================
 
 Modeled after processMeerKAT.
@@ -40,12 +39,34 @@ from time import gmtime
 
 import config_parser
 
+
+class ColoredFormatter(logging.Formatter):
+    """Tint the level name green/orange/red; leave the message alone."""
+    GREEN = '\033[92m'
+    ORANGE = '\033[93m'
+    RED = '\033[91m'
+    RESET = '\033[0m'
+
+    def format(self, record):
+        original_level = record.levelname
+        if original_level == 'INFO':
+            record.levelname = f'{self.GREEN}INFO{self.RESET}'
+        elif original_level == 'WARNING':
+            record.levelname = f'{self.ORANGE}WARN{self.RESET}'
+        elif original_level in ('ERROR', 'CRITICAL'):
+            record.levelname = f'{self.RED}{original_level}{self.RESET}'
+        formatted = super().format(record)
+        record.levelname = original_level
+        return formatted
+
+
 logging.Formatter.converter = gmtime
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    format="%(asctime)-15s %(levelname)s: %(message)s",
-    level=logging.INFO,
-)
+_handler = logging.StreamHandler(stream=sys.stdout)  # stdout so it interleaves with print() output
+_handler.setFormatter(ColoredFormatter(fmt="%(asctime)-15s %(levelname)s: %(message)s"))
+logger.addHandler(_handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 THIS_PROG = os.path.realpath(__file__)
 SCRIPT_DIR = os.path.dirname(THIS_PROG)
@@ -74,7 +95,7 @@ def check_ilifu_environment():
 
     if not found:
         logger.error("=" * 60)
-        logger.error("ERROR: processRM is designed ONLY for the ilifu cluster")
+        logger.error("processRM is designed ONLY for the ilifu cluster")
         logger.error("=" * 60)
         logger.error("This system does not appear to be on ilifu:")
         for p in ilifu_indicators:
@@ -87,7 +108,7 @@ def check_ilifu_environment():
 
     # Check SLURM is available (sbatch command)
     if not shutil.which('sbatch'):
-        logger.error("ERROR: sbatch not found in PATH.")
+        logger.error("sbatch not found in PATH.")
         logger.error("processRM requires SLURM (only available on ilifu compute environment).")
         logger.error("If you are on the login node, ensure 'bash -l' is loaded.")
         sys.exit(1)
@@ -261,11 +282,11 @@ def build_config_from_args(args, workdir):
     Returns the path to the new config file.
     """
     if not args.freqlist:
-        logger.error("ERROR: -f/--freqlist is required when using -F/--fitsfile")
+        logger.error("-f/--freqlist is required when using -F/--fitsfile")
         sys.exit(1)
 
     if not os.path.exists(args.freqlist):
-        logger.error(f"ERROR: Frequency list not found: {args.freqlist}")
+        logger.error(f"Frequency list not found: {args.freqlist}")
         sys.exit(1)
 
     validate_ilifu_path(args.freqlist, label="freqlist")
@@ -279,7 +300,7 @@ def build_config_from_args(args, workdir):
     if len(fits_files) == 1:
         fits_full_abs = os.path.abspath(fits_files[0])
         if not os.path.exists(fits_full_abs):
-            logger.error(f"ERROR: FITS file not found: {fits_full_abs}")
+            logger.error(f"FITS file not found: {fits_full_abs}")
             sys.exit(1)
         validate_ilifu_path(fits_full_abs, label="fits_full")
         # Link into workdir so pipeline scripts can reference by basename
@@ -289,7 +310,7 @@ def build_config_from_args(args, workdir):
         fits_u_abs = os.path.abspath(fits_files[1])
         for f in [fits_q_abs, fits_u_abs]:
             if not os.path.exists(f):
-                logger.error(f"ERROR: FITS file not found: {f}")
+                logger.error(f"FITS file not found: {f}")
                 sys.exit(1)
             validate_ilifu_path(f, label="fits_stokesQ/U")
         fits_q = link_into_workdir(fits_q_abs, workdir, label="fits_stokesQ")
@@ -348,8 +369,7 @@ def generate_submit_script(workdir, config_path):
 
     script_content = f"""#!/bin/bash
 # ==================================================================
-#  processRM master submission script (integrated with ilifu)
-#  Made by Amani - Made to make RM-synthesis easier
+#  processRM master submission script
 # ==================================================================
 # Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 # Config: {config_path}
@@ -360,8 +380,7 @@ WORKDIR="{workdir}"
 cd "$WORKDIR"
 
 echo "=================================================="
-echo "  processRM Pipeline Submission (integrated with ilifu)"
-echo "  Made by Amani - Made to make RM-synthesis easier"
+echo "  processRM Pipeline Submission"
 echo "=================================================="
 echo "Workdir: $WORKDIR"
 echo "Config:  $CONFIG"
@@ -513,13 +532,12 @@ BANNER = r"""
   |_|   |_|  \___/ \___\___||___/___/_| \_\_|  |_|
 
   processRM - RM Synthesis Pipeline Orchestrator
-  (integrated with ilifu)
-  Made by Amani - Made to make RM-synthesis easier
+  RM-synthesis made simple
 ==================================================================
 """
 
 def main():
-    print(BANNER)
+    print(BANNER, flush=True)
     args = parse_args()
 
     # Ilifu environment check (processRM is ilifu-only)
@@ -527,24 +545,25 @@ def main():
 
     workdir = setup_workdir(args.workdir)
 
+    print()
     logger.info(f"processRM v{__version__}")
     logger.info(f"Working directory: {workdir}")
+    print()
 
     # Case 1: User provided -C (existing config)
     if args.config:
         config_path = os.path.abspath(args.config)
         if not os.path.exists(config_path):
-            logger.error(f"ERROR: Config file not found: {config_path}")
+            logger.error(f"Config file not found: {config_path}")
             sys.exit(1)
         logger.info(f"Using config: {config_path}")
 
     # Case 2: User provided -F (build config from FITS file)
     elif args.fitsfile:
         config_path = build_config_from_args(args, workdir)
-        logger.info(f"Built config: {config_path}")
 
     else:
-        logger.error("ERROR: must provide either -C (config file) or -F (FITS file)")
+        logger.error("Must provide either -C (config file) or -F (FITS file)")
         sys.exit(1)
 
     # Validate config
@@ -555,6 +574,8 @@ def main():
         logger.error(f"Config validation failed: {e}")
         sys.exit(1)
 
+    print()
+
     # Copy scripts and generate submit_pipeline.sh
     copy_pipeline_scripts(workdir)
     # Also copy config_parser into workdir so submit_pipeline.sh can use it
@@ -564,6 +585,7 @@ def main():
 
     # Auto-submit if -s flag was used
     if args.submit:
+        print()
         logger.info("Auto-submitting pipeline (-s flag)...")
         os.system(f"cd {workdir} && {submit_script}")
     else:
@@ -572,11 +594,14 @@ def main():
         print("=" * 50)
         print(f"  Workdir:    {workdir}")
         print(f"  Config:     {config_path}")
-        print(f"\n  To submit the pipeline, run:")
+        print()
+        print(f"  To submit the pipeline, run:")
         print(f"     ./submit_pipeline.sh")
-        print(f"\n  To check status:")
+        print()
+        print(f"  To check status:")
         print(f"     ./fullSummary")
         print("=" * 50)
+        print()
 
 
 if __name__ == '__main__':
