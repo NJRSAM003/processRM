@@ -34,10 +34,76 @@ import os
 import sys
 import shutil
 import logging
+import re
 from datetime import datetime
 from time import gmtime
 
 import config_parser
+
+
+def update_config_inplace(config_path, updates):
+    """Update specific keys in an INI file while preserving comments, blank lines,
+    and column alignment of inline comments.
+
+    Python's configparser.write() drops all inline comments, which would destroy
+    the per-parameter guidance baked into default_config.txt. This function does
+    a line-by-line rewrite that touches only the value of targeted keys.
+
+    updates: dict mapping (section, key) -> new value (string, already quoted/formatted)
+    """
+    with open(config_path) as f:
+        lines = f.readlines()
+
+    # group 1 = indent, 2 = key, 3 = ' = ' (with surrounding whitespace),
+    # 4 = value (greedy stop at whitespace+#), 5 = trailing whitespace, 6 = comment, 7 = newline
+    line_re = re.compile(
+        r'^(\s*)([A-Za-z_]\w*)(\s*=\s*)(.*?)([ \t]*)(#.*)?(\r?\n?)$'
+    )
+    section_re = re.compile(r'^\s*\[([^\]]+)\]')
+
+    current_section = None
+    out = []
+
+    for line in lines:
+        sec_match = section_re.match(line)
+        if sec_match:
+            current_section = sec_match.group(1)
+            out.append(line)
+            continue
+
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            out.append(line)
+            continue
+
+        m = line_re.match(line)
+        if not (m and current_section):
+            out.append(line)
+            continue
+
+        indent, key, eq, old_value, gap, comment, newline = m.groups()
+        comment = comment or ''
+        gap = gap or ''
+
+        target = (current_section, key)
+        if target not in updates:
+            out.append(line)
+            continue
+
+        new_value = updates[target]
+
+        if comment:
+            # Keep the comment at its original column for alignment
+            original_value_end = len(indent) + len(key) + len(eq) + len(old_value)
+            comment_col = original_value_end + len(gap)
+            new_value_end = len(indent) + len(key) + len(eq) + len(new_value)
+            needed_gap = max(comment_col - new_value_end, 1)
+            out.append(f"{indent}{key}{eq}{new_value}{' ' * needed_gap}{comment}{newline}")
+        else:
+            out.append(f"{indent}{key}{eq}{new_value}{newline}")
+
+    with open(config_path, 'w') as f:
+        f.writelines(out)
 
 
 class ColoredFormatter(logging.Formatter):
@@ -338,35 +404,39 @@ def build_config_from_args(args, workdir):
     shutil.copy2(DEFAULT_CONFIG, config_path)
     logger.info(f"Created config file: {config_path}")
 
-    # Update config with user-provided values
-    taskvals, config = config_parser.parse_config(config_path)
-    config.set('data', 'fits_full', f"'{fits_full}'")
-    config.set('data', 'fits_stokesQ', f"'{fits_q}'")
-    config.set('data', 'fits_stokesU', f"'{fits_u}'")
-    config.set('data', 'freqlist', f"'{freqlist}'")
+    # Use the parsed default config to determine the rm_container fallback,
+    # then write all updates back via the format-preserving inline updater so
+    # the per-parameter comments in default_config.txt survive.
+    taskvals, _ = config_parser.parse_config(config_path)
+
+    updates = {
+        ('data', 'fits_full'):     f"'{fits_full}'",
+        ('data', 'fits_stokesQ'):  f"'{fits_q}'",
+        ('data', 'fits_stokesU'):  f"'{fits_u}'",
+        ('data', 'freqlist'):      f"'{freqlist}'",
+    }
 
     if args.chunks:
-        config.set('chunking', 'chunks', str(args.chunks))
+        updates[('chunking', 'chunks')] = str(args.chunks)
 
     if args.submit:
-        config.set('slurm', 'submit', 'True')
+        updates[('slurm', 'submit')] = 'True'
 
-    # Resolve rm_container path: --rm-container > current value > default location
+    # Resolve rm_container path: --rm-container > current value in config > install default
     default_rm_container = os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
     if args.rm_container_override:
         rm_container = os.path.abspath(os.path.expanduser(args.rm_container_override))
     else:
-        existing = config.get('slurm', 'rm_container', fallback="''").strip("'\"")
+        existing = (taskvals.get('slurm', {}).get('rm_container') or '').strip()
         rm_container = existing or default_rm_container
-    config.set('slurm', 'rm_container', f"'{rm_container}'")
+    updates[('slurm', 'rm_container')] = f"'{rm_container}'"
 
     if not os.path.exists(rm_container):
         logger.warning(f"  -> rm_container path does not exist yet: {rm_container}")
         logger.warning("     If you haven't run setup.sh, do so to fetch the container.")
         logger.warning("     Or pass --rm-container <path> to point at an existing .sif.")
 
-    with open(config_path, 'w') as f:
-        config.write(f)
+    update_config_inplace(config_path, updates)
 
     return config_path
 
