@@ -98,7 +98,7 @@ def make_empty_image(inputName, crop, pointing, mode="normal"):
     header_size = len(
         header.tostring()
     )  # Probably 2880. We don't pad the header any more; it's just the bare minimum
-    data_size = np.product(dims) * np.dtype(np.float32).itemsize
+    data_size = np.prod(dims) * np.dtype(np.float32).itemsize
     # This is not documented in the example, but appears to be Astropy's default behaviour
     # Pad the total file size to a multiple of the header block size
     block_size = 2880

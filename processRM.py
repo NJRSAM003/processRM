@@ -571,17 +571,17 @@ fi
 # Stage 2: Generate the RM synthesis array sbatch
 echo ""
 echo "[Stage 2] Generating run_parallel_rmsy.sbatch..."
-singularity exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \\
-    --inputFitsStokesQ "$FITS_Q" \\
-    --inputFitsStokesU "$FITS_U" \\
-    --freqList "$FREQLIST" \\
-    --rmsyCleanThrethold "$THRESHOLD" \\
-    --rmsyCleanIterations "$ITERATIONS" \\
-    --rmsyCleanWindow "$WINDOW" \\
-    --rmsyCleanGain "$GAIN" \\
-    --account "$ACCOUNT" \\
-    --casaContainer "$CASA_CONTAINER" \\
-    --rmContainer "$RM_CONTAINER" \\
+singularity exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \
+    --inputFitsStokesQ "$FITS_Q" \
+    --inputFitsStokesU "$FITS_U" \
+    --freqList "$FREQLIST" \
+    --rmsyCleanThrethold "$THRESHOLD" \
+    --rmsyCleanIterations "$ITERATIONS" \
+    --rmsyCleanWindow "$WINDOW" \
+    --rmsyCleanGain "$GAIN" \
+    --account "$ACCOUNT" \
+    --casaContainer "$CASA_CONTAINER" \
+    --rmContainer "$RM_CONTAINER" \
     --createSbatch
 
 # Stage 3: Submit the RM synthesis array job (sub-submit from inside SLURM)
