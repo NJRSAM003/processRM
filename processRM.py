@@ -587,6 +587,17 @@ import config_parser
 t,_ = config_parser.parse_config('$CONFIG')
 print(t['rmclean'].get('iterations', 5000))
 ")
+WINDOW=$(python3 -c "
+import config_parser
+t,_ = config_parser.parse_config('$CONFIG')
+w = t['rmclean'].get('window', 0)
+print(0 if w in ('', None) else float(w))
+")
+GAIN=$(python3 -c "
+import config_parser
+t,_ = config_parser.parse_config('$CONFIG')
+print(t['rmclean'].get('gain', 0.1))
+")
 
 # Stage 1: Extract Stokes Q/U if user provided full cube
 if [ -n "$FITS_FULL" ]; then
@@ -610,6 +621,8 @@ echo "[Stage 2] Generating RM synthesis sbatch file..."
     --freqList "$FREQLIST" \\
     --rmsyCleanThrethold "$THRESHOLD" \\
     --rmsyCleanIterations "$ITERATIONS" \\
+    --rmsyCleanWindow "$WINDOW" \\
+    --rmsyCleanGain "$GAIN" \\
     --account "$ACCOUNT" \\
     --casaContainer "$CASA_CONTAINER" \\
     --rmContainer "$RM_CONTAINER" \\

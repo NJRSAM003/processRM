@@ -188,7 +188,7 @@ if [ -f "$FDF_CLEAN" ]; then
 else
     echo "[Stage 3] Running rmclean3d for task $TASKID"
     t0=$SECONDS
-    singularity exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
+    singularity exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {('-w ' + str(args.rmsyCleanWindow)) if args.rmsyCleanWindow > 0 else ''} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
     rc=$?
     log_stage "rmclean" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -268,6 +268,10 @@ Examples:
                         help='SLURM array task ID (set by SLURM, used to process one strip)')
     parser.add_argument('--rmsyCleanThrethold', type=float, default=0.0000010,
                         help='RM clean threshold (default: 0.0000010)')
+    parser.add_argument('--rmsyCleanWindow', type=float, default=0.0,
+                        help='-w WINDOW for rmclean3d. 0 = skip second pass (default).')
+    parser.add_argument('--rmsyCleanGain', type=float, default=0.1,
+                        help='-g GAIN for rmclean3d (default: 0.1)')
     parser.add_argument('--rmsyCleanIterations', type=int, default=50,
                         help='RM clean iterations (default: 50)')
     parser.add_argument('--account', default='b09-mightee-ag',
