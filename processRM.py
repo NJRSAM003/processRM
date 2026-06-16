@@ -500,7 +500,7 @@ def generate_submit_script(workdir, config_path):
     submit_path = os.path.join(workdir, MASTER_SCRIPT)
 
     # ----- orchestrator sbatch (runs on a compute node) -----
-    orchestrator = f"""#!/bin/bash
+    orchestrator = rf"""#!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
@@ -663,7 +663,7 @@ echo "Cancel merge:               ./killJobs_merge"
     logger.info(f"Generated: {orch_path}")
 
     # ----- thin submit_pipeline.sh (calls sbatch only, runs anywhere) -----
-    submit_wrapper = f"""#!/bin/bash
+    submit_wrapper = rf"""#!/bin/bash
 # ==================================================================
 #  processRM master submission script
 # ==================================================================
