@@ -487,133 +487,72 @@ def _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals):
 
 
 def generate_submit_script(workdir, config_path):
-    """Generate the submit_pipeline.sh master script."""
+    """Generate the orchestrator sbatch and the thin submit_pipeline.sh wrapper.
+
+    Mirrors processMeerKAT's design: submit_pipeline.sh only calls 'sbatch'
+    (works from the login node). The actual orchestration (Stokes extraction,
+    run_parallel_rmsy sbatch generation + sub-submission, merge sbatch
+    generation + sub-submission) lives inside processRM_orchestrate.sbatch,
+    which SLURM dispatches to a compute node where 'singularity exec' is
+    permitted.
+    """
+    orch_path = os.path.join(workdir, 'processRM_orchestrate.sbatch')
     submit_path = os.path.join(workdir, MASTER_SCRIPT)
 
-    script_content = f"""#!/bin/bash
-# ==================================================================
-#  processRM master submission script
-# ==================================================================
-# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-# Config: {config_path}
+    # ----- orchestrator sbatch (runs on a compute node) -----
+    orchestrator = f"""#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=10GB
+#SBATCH --job-name=processRM_orchestrate
+#SBATCH --output=logs/orchestrate-%j.out
+#SBATCH --error=logs/orchestrate-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=02:00:00
+# Account, container & config values are templated in below at generation time:
+#SBATCH --account=__ACCOUNT__
 
 set -e
 CONFIG="{os.path.basename(config_path)}"
 WORKDIR="{workdir}"
 cd "$WORKDIR"
 
-# Refuse to run on login/transfer nodes — singularity exec is blocked there
-# (errors with 'Permission denied' / 'Bad file descriptor' on user namespaces).
-HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
-case "$HOSTNAME_SHORT" in
-    slurm-login*|transfer*|login*)
-        echo "ERROR: submit_pipeline.sh cannot run on the login/transfer node ($HOSTNAME_SHORT)."
-        echo "       ilifu blocks 'singularity exec' there, so the Stokes extraction step"
-        echo "       and the sbatch-generation calls will fail."
-        echo ""
-        echo "       Grab a compute session first, then re-run:"
-        echo "           small-sesh"
-        echo "           cd $WORKDIR"
-        echo "           ./submit_pipeline.sh"
-        exit 1
-        ;;
-esac
-
+cat /etc/hostname
 echo "=================================================="
-echo "  processRM Pipeline Submission"
+echo "  processRM Orchestrator"
 echo "=================================================="
 echo "Workdir: $WORKDIR"
 echo "Config:  $CONFIG"
 echo ""
 
-# Parse key config values
-FITS_FULL=$(python3 -c "
+read_cfg () {{
+    singularity exec __RM_CONTAINER__ python3 -c "
 import config_parser
 t,_ = config_parser.parse_config('$CONFIG')
-print(t['data'].get('fits_full', ''))
-")
-FITS_Q=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['data'].get('fits_stokesQ', ''))
-")
-FITS_U=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['data'].get('fits_stokesU', ''))
-")
-FREQLIST=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['data'].get('freqlist', ''))
-")
-PARALLEL=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['chunking'].get('parallel', 100))
-")
-CHUNKS=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['chunking'].get('chunks', t['chunking'].get('parallel', 100)))
-")
-ACCOUNT=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['slurm'].get('account', 'b03-idia-ag'))
-")
-RM_CONTAINER=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['slurm'].get('rm_container', ''))
-")
-CASA_CONTAINER=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['slurm'].get('casa_container', ''))
-")
+print((t.get('$1', {{}}).get('$2', '') or '').strip() or '$3')
+"
+}}
 
-# Validate containers (required — no host venv fallback)
-if [ -z "$RM_CONTAINER" ]; then
-    echo "ERROR: [slurm] rm_container is not set in config."
-    echo "  Build the container first: see processRM/container/README.md"
-    exit 1
-fi
-if [ ! -f "$RM_CONTAINER" ]; then
-    echo "ERROR: rm_container not found: $RM_CONTAINER"
-    echo "  Download it with: cd ~/processRM/container && ./download_container.sh"
-    exit 1
-fi
-if [ ! -f "$CASA_CONTAINER" ]; then
-    echo "ERROR: casa_container not found: $CASA_CONTAINER"
-    exit 1
-fi
+FITS_FULL=$(read_cfg data fits_full '')
+FITS_Q=$(read_cfg data fits_stokesQ '')
+FITS_U=$(read_cfg data fits_stokesU '')
+FREQLIST=$(read_cfg data freqlist '')
+PARALLEL=$(read_cfg chunking parallel 100)
+CHUNKS=$(read_cfg chunking chunks $PARALLEL)
+ACCOUNT=$(read_cfg slurm account b03-idia-ag)
+RM_CONTAINER=$(read_cfg slurm rm_container '')
+CASA_CONTAINER=$(read_cfg slurm casa_container /idia/software/containers/casa-6.4.4-modular.simg)
+THRESHOLD=$(read_cfg rmclean threshold 0.0000010)
+ITERATIONS=$(read_cfg rmclean iterations 5000)
+WINDOW=$(read_cfg rmclean window 0)
+GAIN=$(read_cfg rmclean gain 0.1)
 
 echo "RM container:   $RM_CONTAINER"
 echo "CASA container: $CASA_CONTAINER"
-THRESHOLD=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['rmclean'].get('threshold', 0.0000010))
-")
-ITERATIONS=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['rmclean'].get('iterations', 5000))
-")
-WINDOW=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-w = t['rmclean'].get('window', 0)
-print(0 if w in ('', None) else float(w))
-")
-GAIN=$(python3 -c "
-import config_parser
-t,_ = config_parser.parse_config('$CONFIG')
-print(t['rmclean'].get('gain', 0.1))
-")
+echo ""
 
-# Stage 1: Extract Stokes Q/U if user provided full cube
+# Stage 1: Stokes Q/U extraction (only if full IQUV cube was supplied)
 if [ -n "$FITS_FULL" ]; then
     echo "[Stage 1] Extracting Stokes Q/U from full cube..."
     singularity exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
@@ -626,9 +565,9 @@ else
     echo "[Stage 1] Skipping extraction (Q and U already provided)"
 fi
 
-# Stage 2: Generate RM synthesis sbatch + submit
+# Stage 2: Generate the RM synthesis array sbatch
 echo ""
-echo "[Stage 2] Generating RM synthesis sbatch file..."
+echo "[Stage 2] Generating run_parallel_rmsy.sbatch..."
 singularity exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \\
     --inputFitsStokesQ "$FITS_Q" \\
     --inputFitsStokesU "$FITS_U" \\
@@ -642,22 +581,33 @@ singularity exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHU
     --rmContainer "$RM_CONTAINER" \\
     --createSbatch
 
+# Stage 3: Submit the RM synthesis array job (sub-submit from inside SLURM)
 echo ""
-echo "[Stage 3] Submitting RM synthesis jobs to SLURM..."
-SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | cut -d ' ' -f4)
-echo "  -> Submitted RM synthesis: SLURM job $SLURMID_RMSY"
+echo "[Stage 3] Submitting RM synthesis array job..."
+SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | awk '{{print $4}}')
+echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY"
 
-# Stage 4: Submit merge job with dependency on RM synthesis
+# Stage 4: Generate merge sbatch, then sub-submit with dependency on Stage 3
 echo ""
-echo "[Stage 4] Generating and submitting merge job..."
+echo "[Stage 4] Generating merge_image_parts.sbatch..."
 INPUT_CUBE="${{FITS_FULL:-$FITS_Q}}"
-singularity exec "$RM_CONTAINER" python3 ./merge_image_parts.py --inputcube "$INPUT_CUBE" --account "$ACCOUNT" \\
-    --rmContainer "$RM_CONTAINER" --casaContainer "$CASA_CONTAINER" &
-sleep 5
+singularity exec "$RM_CONTAINER" python3 -c "
+import os, sys
+sys.path.insert(0, '.')
+import merge_image_parts as m
+class A:
+    inputcube='$INPUT_CUBE'
+    account='$ACCOUNT'
+    rmContainer='$RM_CONTAINER'
+    casaContainer='$CASA_CONTAINER'
+m.write_sbatch_file(A.inputcube, account=A.account, rm_container=A.rmContainer, casa_container=A.casaContainer)
+"
 
 if [ -f merge_image_parts.sbatch ]; then
-    SLURMID_MERGE=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_image_parts.sbatch | cut -d ' ' -f4)
-    echo "  -> Submitted merge: SLURM job $SLURMID_MERGE (depends on $SLURMID_RMSY)"
+    SLURMID_MERGE=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_image_parts.sbatch | awk '{{print $4}}')
+    echo "  -> Merge: SLURM job $SLURMID_MERGE (depends on $SLURMID_RMSY)"
+else
+    echo "  WARNING: merge sbatch was not written; merge stage skipped."
 fi
 
 echo ""
@@ -665,12 +615,63 @@ echo "===================================="
 echo "  Pipeline submitted successfully!"
 echo "===================================="
 echo "Check status with: ./fullSummary"
-echo "View logs in: logs/"
-echo "View errors in: errors/"
+"""
+
+    # Templated values not safe to drop straight into f-string above:
+    # they need to be substituted AFTER parsing the live config at generation time.
+    # We read them from the config here (login-side) and bake into the orchestrator.
+    taskvals, _ = config_parser.parse_config(config_path)
+    account_val = (taskvals.get('slurm', {}).get('account') or 'b03-idia-ag').strip("'\"")
+    rm_container_val = (taskvals.get('slurm', {}).get('rm_container') or '').strip("'\"")
+    orchestrator = (orchestrator
+                    .replace('__ACCOUNT__', account_val)
+                    .replace('__RM_CONTAINER__', rm_container_val))
+
+    with open(orch_path, 'w') as f:
+        f.write(orchestrator)
+    os.chmod(orch_path, 0o755)
+    logger.info(f"Generated: {orch_path}")
+
+    # ----- thin submit_pipeline.sh (calls sbatch only, runs anywhere) -----
+    submit_wrapper = f"""#!/bin/bash
+# ==================================================================
+#  processRM master submission script
+# ==================================================================
+# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Config: {config_path}
+#
+# This script ONLY calls sbatch (works from login, transfer, or any
+# compute node). All real work runs inside SLURM jobs, on compute nodes,
+# inside the rm-env container. Matches processMeerKAT's master design.
+
+set -e
+WORKDIR="{workdir}"
+cd "$WORKDIR"
+
+mkdir -p logs errors processing
+
+echo "=================================================="
+echo "  processRM Pipeline Submission"
+echo "=================================================="
+echo "Workdir: $WORKDIR"
+echo ""
+echo "Submitting orchestrator job to SLURM..."
+
+JOBID=$(sbatch processRM_orchestrate.sbatch | awk '{{print $4}}')
+echo "  -> Orchestrator: SLURM job $JOBID"
+echo ""
+echo "It will:"
+echo "  Stage 1 - Extract Stokes Q/U (if full IQUV cube provided)"
+echo "  Stage 2 - Generate run_parallel_rmsy.sbatch"
+echo "  Stage 3 - Sub-submit RM synthesis array (depends on Stage 1)"
+echo "  Stage 4 - Generate merge sbatch + sub-submit (depends on Stage 3)"
+echo ""
+echo "Check status with:    ./fullSummary"
+echo "Tail orchestrator:    tail -f logs/orchestrate-${{JOBID}}.out"
 """
 
     with open(submit_path, 'w') as f:
-        f.write(script_content)
+        f.write(submit_wrapper)
     os.chmod(submit_path, 0o755)
     logger.info(f"Generated: {submit_path}")
     return submit_path
