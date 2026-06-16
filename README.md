@@ -85,7 +85,7 @@ See [`default_config.txt`](default_config.txt) for the fully-annotated reference
 
 ## License
 
-MIT (TBD — confirm with collaborators)
+[GNU General Public License v3.0](LICENSE)
 
 ## Credits
 
