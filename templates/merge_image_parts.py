@@ -150,15 +150,27 @@ def fill_cube_with_images(outputName, listing_all_parts, initial_fits_header):
         except:
             dataCubeOutput[:, y_height:y+y_height, :] = data_sub_image[:, :, :]
 
-        #dataCubeOutput[:, :, y_height:y+y_height, :] += data_sub_image[:, :, :, :]
-
         y_height += y
         hud_sub_image_input.close()
+
+    # [CHANGE 2026-06-16]: Coverage sanity check
+    # Refuse to declare the merge "done" if the assembled chunks don't fill
+    # the entire NAXIS2 of the output cube. Anything less than NAXIS2 means
+    # we left an unchunked residual at the bottom and the WCS is misaligned.
+    expected_y = initial_fits_header.get('NAXIS2', None)
+    if expected_y is not None and y_height != expected_y:
+        raise ValueError(
+            f"[MERGE] Coverage mismatch for {cubeNameOutput}: assembled "
+            f"{y_height} rows but the output cube expects {expected_y}. "
+            f"Difference of {expected_y - y_height} rows would offset the WCS. "
+            "Re-check the chunker (run_parallel_rmsy.py); the last chunk should "
+            "absorb any (shape[1] %% parallel) residual."
+        )
+
     update_fits_header_of_cube(cubeNameOutput, initial_fits_header)
     hudCubeOutput.close()
 
-
-    print("Cube filled:", cubeNameOutput)
+    print(f"Cube filled OK: {cubeNameOutput} (rows assembled: {y_height})")
 
 
 def create_all_cubes(inputcube, slurmArrayTaskId):

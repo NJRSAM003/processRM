@@ -438,7 +438,48 @@ def build_config_from_args(args, workdir):
 
     update_config_inplace(config_path, updates)
 
+    # [CHANGE 2026-06-16]: Geometry preview
+    # The chunker uses int(NAXIS2 / parallel) which truncates, and the last chunk
+    # absorbs the remainder. Print that math up front so the user can sanity-check
+    # before submitting a 100-task array.
+    _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals)
+
     return config_path
+
+
+def _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals):
+    """Read NAXIS2 from the input cube and log how it will be split."""
+    try:
+        from astropy.io import fits
+    except ImportError:
+        return
+    sample = fits_full or fits_q
+    if not sample:
+        return
+    sample_path = os.path.join(workdir, sample)
+    if not os.path.exists(sample_path):
+        return
+    try:
+        naxis2 = fits.getheader(sample_path)['NAXIS2']
+    except Exception:
+        return
+
+    parallel = int(taskvals.get('chunking', {}).get('parallel', 100))
+    chunks = int(args.chunks) if args.chunks else \
+             int(taskvals.get('chunking', {}).get('chunks', parallel))
+    y_size = naxis2 // parallel
+    residual = naxis2 - parallel * y_size
+    last_size = y_size + residual
+
+    logger.info(
+        f"chunk geometry: NAXIS2={naxis2}, parallel={parallel}, "
+        f"y_size={y_size}px, last chunk={last_size}px (residual={residual}px absorbed)"
+    )
+    if chunks < parallel:
+        logger.warning(
+            f"  -> chunks ({chunks}) < parallel ({parallel}): only {chunks} tasks will run, "
+            f"covering {chunks * y_size} of {naxis2} rows. Outputs may be incomplete."
+        )
 
 
 def generate_submit_script(workdir, config_path):

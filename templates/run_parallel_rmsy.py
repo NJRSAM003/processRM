@@ -62,13 +62,28 @@ def run_rmsy_job(args):
         # Reason: When shape[1] is not divisible by parallel, int(shape[1]/parallel)
         # truncates and the bottom (shape[1] - parallel*y_size) pixels were left
         # unchunked. The merge then placed chunks starting at output y=0, which
-        # SHIFTED the entire merged cube upward in pixel space by that residual
-        # (e.g. 44 px for a 6144-px cube with parallel=100). The merged WCS still
-        # described the original image, so the FDF cube appeared offset from
-        # Stokes I by ~66 arcsec. Forcing the bottom chunk's y1 down to 0 makes
-        # the last chunk slightly larger and covers every row.
+        # SHIFTED the entire merged cube upward in pixel space by that residual.
         if int(args.slurmArrayTaskId) == int(args.parallel):
             y1 = 0
+
+        # [CHANGE 2026-06-16]: Geometry sanity check - log every chunk's y range
+        # and yell if it's empty, off the image, or fails to cover the residual.
+        residual = shape[1] - int(args.parallel) * y_size
+        chunk_height = y2 - y1 + 1
+        expected_height = y_size if int(args.slurmArrayTaskId) != int(args.parallel) else (y_size + residual)
+        print(f"[GEOM] task {args.slurmArrayTaskId}/{args.parallel}: "
+              f"y=[{y1},{y2}] height={chunk_height} (expected {expected_height}) "
+              f"residual={residual}")
+        if y1 < 0 or y2 >= shape[1] or y1 > y2:
+            raise ValueError(
+                f"[GEOM] Chunk range out of bounds: task {args.slurmArrayTaskId} "
+                f"y=[{y1},{y2}], image height={shape[1]}"
+            )
+        if chunk_height != expected_height:
+            raise ValueError(
+                f"[GEOM] Chunk size mismatch: task {args.slurmArrayTaskId} "
+                f"got {chunk_height} rows, expected {expected_height}"
+            )
         reg = f"box[[0pix,{y2}pix],[{xmax}pix,{y1}pix]]"
         outfile = f"part_{args.slurmArrayTaskId}_{inputFits}"
         print(y1, y2)
