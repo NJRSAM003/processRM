@@ -744,32 +744,100 @@ BANNER = r"""
 ==================================================================
 """
 
+RUN_GENERATED_ARTIFACTS = (
+    'submit_pipeline.sh', 'processRM_orchestrate.sbatch',
+    'run_parallel_rmsy.sbatch', 'merge_image_parts.sbatch',
+    'config_parser.py', 'create_subimage.py', 'create_subimage_rmsy_cube.py',
+    'run_parallel_rmsy.py', 'merge_image_parts.py', 'fullSummary',
+    'killJobs', 'killJobs_orchestrator', 'killJobs_rmsynth_clean', 'killJobs_merge',
+)
+
+
+def cleanup_run_artifacts(workdir):
+    """Remove RUN-mode-generated files so the user can fix config and retry cleanly.
+    Leaves the config file, any input data, and logs/processing/errors/ alone."""
+    removed = []
+    for name in RUN_GENERATED_ARTIFACTS:
+        p = os.path.join(workdir, name)
+        if os.path.islink(p) or os.path.exists(p):
+            try:
+                os.unlink(p)
+                removed.append(name)
+            except OSError:
+                pass
+    # Drop any broken symlinks (e.g. our [data] symlinks pointing at moved sources)
+    try:
+        for entry in os.listdir(workdir):
+            p = os.path.join(workdir, entry)
+            if os.path.islink(p) and not os.path.exists(p):
+                os.unlink(p)
+                removed.append(entry + ' (broken symlink)')
+    except OSError:
+        pass
+    if removed:
+        logger.warning(f"Cleaned up stale artifacts: {', '.join(removed)}")
+
+
 def materialize_workdir_from_config(config_path, workdir):
-    """RUN-mode setup: read the config, create symlinks for the input files,
-    copy pipeline scripts in, and generate submit_pipeline.sh. Updates the
-    config so [data] paths become local basenames (matching the symlinks).
+    """RUN-mode setup: validate input files first, then symlink them into
+    workdir, copy pipeline scripts in, and generate submit_pipeline.sh.
+
+    If any input file is missing, we LOUDLY refuse to materialise and
+    clean up any half-built scaffolding from a previous run so the
+    user gets a fresh start once they fix the config.
     """
     taskvals, _ = config_parser.parse_config(config_path)
     data = taskvals.get('data', {})
 
+    # ---- Pre-flight: validate every [data] path BEFORE touching anything ----
+    missing = []
+    for key in ('fits_full', 'fits_stokesQ', 'fits_stokesU', 'freqlist'):
+        path = (data.get(key) or '').strip()
+        if not path:
+            continue
+        if path == os.path.basename(path):
+            # Config already has a basename — file must already exist in workdir
+            dst = os.path.join(workdir, path)
+            if not os.path.exists(dst):
+                missing.append((key, path, dst))
+        else:
+            # Config has a directory part — verify the absolute source exists
+            if not os.path.exists(path):
+                missing.append((key, path, path))
+
+    if missing:
+        logger.error("=" * 60)
+        logger.error("CANNOT MATERIALISE WORKDIR — input file(s) missing!")
+        logger.error("=" * 60)
+        for key, config_val, looked_for in missing:
+            logger.error(f"  [data] {key} = '{config_val}'")
+            logger.error(f"         tried to read: {looked_for}  (NOT FOUND)")
+        logger.error("")
+        logger.error("Fix the [data] paths in your config file, then re-run with -R.")
+        logger.error(f"Or rebuild from scratch:")
+        logger.error(f"   processRM -F /full/path/to/cube.fits -f /full/path/to/freqs.txt "
+                     f"-C {os.path.basename(config_path)}")
+        logger.error("")
+        cleanup_run_artifacts(workdir)
+        logger.error("Run aborted. No SLURM jobs were submitted.")
+        sys.exit(1)
+
+    # ---- All paths good — materialise the workdir ----
     updates = {}
     for key in ('fits_full', 'fits_stokesQ', 'fits_stokesU', 'freqlist'):
         path = (data.get(key) or '').strip()
         if not path:
             continue
-        # Already a local basename (no directory part)? leave it.
-        if os.path.basename(path) == path:
+        if path == os.path.basename(path):
+            # Already a local basename and file exists (verified above) — nothing to do
             continue
-        if not os.path.exists(path):
-            logger.error(f"[data] {key} not found: {path}")
-            sys.exit(1)
         basename = link_into_workdir(path, workdir, label=key)
         updates[('data', key)] = f"'{basename}'"
 
     if updates:
         update_config_inplace(config_path, updates)
 
-    # Setup subdirectories now that we are actually about to run
+    # Subdirectories — only now that we know we will actually run
     for sub in ['logs', 'processing', 'errors']:
         os.makedirs(os.path.join(workdir, sub), exist_ok=True)
     for sub in ['extract', 'rmsynth', 'rmclean', 'merge']:
