@@ -98,38 +98,63 @@ def sacct_for_job(jobid):
 
 
 def cancelled_stages_from_sacct():
-    """Walk recent processRM-related SLURM jobs and return a set of stage
-    names ({'extract', 'chunking', 'rmsynth', 'rmclean', 'merge'}) that
-    have been CANCELLED (so their progress bar can be coloured orange).
+    """Return the set of pipeline stage names whose most recent SLURM job
+    was CANCELLED and that have nothing actively running.
+
+    A stage with running tasks RIGHT NOW overrides a historical CANCELLED.
+    Only the LATEST entry per job name (by JobID) is considered, so an old
+    cancelled run from yesterday doesn't paint today's healthy run orange.
     """
     cancelled = set()
+
+    # Step 1: collect job-name prefixes that have anything active right now
+    active_names = {j['name'].split('_')[0] for j in squeue_for_user()}
+
+    # Step 2: walk last 24h of sacct, keeping only the LATEST state per name
+    latest_state = {}
     try:
         result = subprocess.run(
-            ['sacct', '--starttime=2024-01-01', '-X',
-             '--format=JobName%30,State%20',
+            ['sacct', '--starttime=now-1days', '-X',
+             '--format=JobID,JobName%30,State%20',
              '--noheader', '--parsable2'],
             capture_output=True, text=True, timeout=20
         )
         if result.returncode != 0:
             return cancelled
+        rows = []
         for line in result.stdout.strip().splitlines():
             parts = line.split('|')
-            if len(parts) < 2:
+            if len(parts) < 3:
                 continue
-            name = parts[0].strip()
-            state = parts[1].strip().split()[0]  # 'CANCELLED by 1000' -> 'CANCELLED'
-            if state != 'CANCELLED':
+            jobid_field = parts[0].strip()
+            try:
+                # Use the numeric prefix of the job ID for ordering (handles 12345_3)
+                jobid_num = int(jobid_field.split('_')[0].split('.')[0])
+            except ValueError:
                 continue
-            n = name.lower()
-            if 'orchestrate' in n:
-                # Cancelling the orchestrator kills whatever it would have launched
-                cancelled.update({'extract'})
-            if n.startswith('rmsy'):
-                cancelled.update({'chunking', 'rmsynth', 'rmclean'})
-            if 'merge' in n:
-                cancelled.add('merge')
+            name = parts[1].strip()
+            state = parts[2].strip().split()[0]
+            rows.append((jobid_num, name, state))
+        # Newest first; only keep the first state we see for each name
+        rows.sort(key=lambda r: r[0], reverse=True)
+        for _, name, state in rows:
+            latest_state.setdefault(name, state)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+
+    for name, state in latest_state.items():
+        if state != 'CANCELLED':
+            continue
+        # Skip if a job with this name is active again — fresh run started
+        if name in active_names or any(name in a or a in name for a in active_names):
+            continue
+        n = name.lower()
+        if 'orchestrate' in n:
+            cancelled.update({'extract'})
+        if n.startswith('rmsy'):
+            cancelled.update({'chunking', 'rmsynth', 'rmclean'})
+        if 'merge' in n:
+            cancelled.add('merge')
     return cancelled
 
 
