@@ -64,6 +64,25 @@ fi
 
 echo ""
 echo "=================================================="
+echo "  Fetching rm-env Singularity container"
+echo "=================================================="
+
+CONTAINER_SIF="$PROCESSRM_DIR/container/rm-env.sif"
+if [ -f "$CONTAINER_SIF" ]; then
+    echo "  -> rm-env.sif already present at $CONTAINER_SIF"
+else
+    if [ -x "$PROCESSRM_DIR/container/download_container.sh" ]; then
+        echo "  -> Running container/download_container.sh ..."
+        "$PROCESSRM_DIR/container/download_container.sh" || \
+            echo "  WARNING: container download failed. Run it manually later:"
+        echo "           cd $PROCESSRM_DIR/container && ./download_container.sh"
+    else
+        echo "  WARNING: container/download_container.sh not found or not executable."
+    fi
+fi
+
+echo ""
+echo "=================================================="
 echo "  Setup complete!"
 echo "=================================================="
 echo ""
@@ -78,4 +97,8 @@ echo "      processRM -F mycube_IQUV.fits -f freqs.txt"
 echo "      processRM -F \"Q.fits U.fits\" -f freqs.txt --chunks 50"
 echo "      processRM -C myconfig.txt -s"
 echo ""
+echo "  Container is at: $CONTAINER_SIF"
+echo "  Move it to a SLURM-readable location (e.g."
+echo "  /idia/projects/<your-project>/containers/) and set"
+echo "  [slurm] rm_container in your config to that path."
 echo "=================================================="

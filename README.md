@@ -56,9 +56,9 @@ SSH into ilifu, then clone processRM into your home directory:
 git clone https://github.com/NJRSAM003/processRM.git ~/processRM
 ```
 
-### Step 2 — Install processRM into your PATH
+### Step 2 — Install processRM into your PATH and download the container
 
-This appends a few lines to your `~/.bashrc` so `processRM` is callable from anywhere:
+This one command appends a few lines to your `~/.bashrc` (so `processRM` is callable from anywhere) AND downloads the prebuilt `rm-env.sif` Singularity container into `~/processRM/container/`:
 
 ```bash
 cd ~/processRM
@@ -72,26 +72,17 @@ Verify with:
 processRM --help
 ```
 
-### Step 3 — Download the rm-env Singularity container (one-time)
-
-The container that holds Python + RM-Tools + dependencies is pre-built and attached to every processRM release. **You do not need to build it yourself.** Just download:
+After this finishes, **move the container to a SLURM-readable location**, e.g.:
 
 ```bash
-cd ~/processRM/container
-wget https://github.com/NJRSAM003/processRM/releases/latest/download/rm-env.sif
+mv ~/processRM/container/rm-env.sif /idia/projects/<your-project>/containers/rm-env.sif
 ```
 
-Then move it to a SLURM-readable location, e.g.:
+(You'll point your config at this location in Step 4.)
 
-```bash
-mv rm-env.sif /idia/projects/<your-project>/containers/rm-env.sif
-```
+See [`container/README.md`](container/README.md) for more on the container (pinning a specific version, rebuilding from source, etc.).
 
-Open `myconfig.txt` (created in Step 5) and set `[slurm] rm_container = '...'` to that path.
-
-See [`container/README.md`](container/README.md) for more options (pinning a specific version, rebuilding from source, etc.).
-
-### Step 4 — Move to your working directory
+### Step 3 — Move to your working directory
 
 `cd` into the directory that contains (or will contain) your FITS cube. All pipeline outputs land here.
 
@@ -99,7 +90,7 @@ See [`container/README.md`](container/README.md) for more options (pinning a spe
 cd /idia/projects/<your-project>/<your-workdir>
 ```
 
-### Step 5 — Generate the pipeline config
+### Step 4 — Generate the pipeline config
 
 Either pass a full Stokes cube **or** separated Q + U cubes, plus a frequency list:
 
@@ -111,7 +102,7 @@ processRM -F mycube_IQUV.fits \
 
 This creates `myconfig.txt`, `submit_pipeline.sh`, and copies the per-stage scripts into the current directory. Open `myconfig.txt` and review the values before submitting.
 
-### Step 6 — Submit the pipeline
+### Step 5 — Submit the pipeline
 
 ```bash
 ./submit_pipeline.sh
@@ -119,7 +110,7 @@ This creates `myconfig.txt`, `submit_pipeline.sh`, and copies the per-stage scri
 
 This validates the containers, generates the SLURM sbatch files, and submits the array jobs.
 
-### Step 7 — Monitor progress
+### Step 6 — Monitor progress
 
 ```bash
 ./fullSummary
