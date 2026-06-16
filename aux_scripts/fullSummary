@@ -97,6 +97,42 @@ def sacct_for_job(jobid):
         return None
 
 
+def cancelled_stages_from_sacct():
+    """Walk recent processRM-related SLURM jobs and return a set of stage
+    names ({'extract', 'chunking', 'rmsynth', 'rmclean', 'merge'}) that
+    have been CANCELLED (so their progress bar can be coloured orange).
+    """
+    cancelled = set()
+    try:
+        result = subprocess.run(
+            ['sacct', '--starttime=2024-01-01', '-X',
+             '--format=JobName%30,State%20',
+             '--noheader', '--parsable2'],
+            capture_output=True, text=True, timeout=20
+        )
+        if result.returncode != 0:
+            return cancelled
+        for line in result.stdout.strip().splitlines():
+            parts = line.split('|')
+            if len(parts) < 2:
+                continue
+            name = parts[0].strip()
+            state = parts[1].strip().split()[0]  # 'CANCELLED by 1000' -> 'CANCELLED'
+            if state != 'CANCELLED':
+                continue
+            n = name.lower()
+            if 'orchestrate' in n:
+                # Cancelling the orchestrator kills whatever it would have launched
+                cancelled.update({'extract'})
+            if n.startswith('rmsy'):
+                cancelled.update({'chunking', 'rmsynth', 'rmclean'})
+            if 'merge' in n:
+                cancelled.add('merge')
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return cancelled
+
+
 # ----------------- Stage analysis -----------------
 def count_extraction(workdir):
     """How many Stokes files have been extracted."""
@@ -265,20 +301,31 @@ def display_summary(workdir, show_errors=False):
     # Stage progress
     print(f"{C.BOLD}━━━ PIPELINE STAGES ━━━{C.END}")
 
+    cancelled = cancelled_stages_from_sacct()
+
+    def stage_colour(stage):
+        # Orange if cancelled, otherwise the normal cyan
+        return C.YELLOW if stage in cancelled else C.CYAN
+
     extract_done, extract_total = count_extraction(workdir)
-    print(f"  {C.CYAN}{bar(extract_done, extract_total, label='Extraction')}{C.END}")
+    print(f"  {stage_colour('extract')}{bar(extract_done, extract_total, label='Extraction')}"
+          f"{' (CANCELLED)' if 'extract' in cancelled else ''}{C.END}")
 
     chunked = count_chunked_inputs(workdir)
-    print(f"  {C.CYAN}{bar(chunked, total_chunks, label='Chunking')}{C.END}")
+    print(f"  {stage_colour('chunking')}{bar(chunked, total_chunks, label='Chunking')}"
+          f"{' (CANCELLED)' if 'chunking' in cancelled else ''}{C.END}")
 
     rmsynth = count_rmsynth(workdir)
-    print(f"  {C.CYAN}{bar(rmsynth, total_chunks, label='RM Synthesis')}{C.END}")
+    print(f"  {stage_colour('rmsynth')}{bar(rmsynth, total_chunks, label='RM Synthesis')}"
+          f"{' (CANCELLED)' if 'rmsynth' in cancelled else ''}{C.END}")
 
     rmclean = count_rmclean(workdir)
-    print(f"  {C.CYAN}{bar(rmclean, total_chunks, label='RM Clean')}{C.END}")
+    print(f"  {stage_colour('rmclean')}{bar(rmclean, total_chunks, label='RM Clean')}"
+          f"{' (CANCELLED)' if 'rmclean' in cancelled else ''}{C.END}")
 
     merged_count, merged_total, merged_files = count_merged(workdir)
-    print(f"  {C.CYAN}{bar(merged_count, merged_total, label='Merging')}{C.END}")
+    print(f"  {stage_colour('merge')}{bar(merged_count, merged_total, label='Merging')}"
+          f"{' (CANCELLED)' if 'merge' in cancelled else ''}{C.END}")
     print()
 
     # SLURM jobs
