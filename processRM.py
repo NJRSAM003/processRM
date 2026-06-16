@@ -133,8 +133,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Build a config from a full Stokes cube and frequency list
+  # Build a config from a full Stokes cube and frequency list (named myconfig.txt by default)
   processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
+
+  # Build a config with a custom name
+  processRM -F mycube_IQUV.fits -f mycube.freqlist.txt -C run1.txt
 
   # Build a config from separate Q and U cubes
   processRM -F "mycube.stokesQ.fits mycube.stokesU.fits" -f freqs.txt
@@ -147,11 +150,13 @@ Examples:
 
   # Specify number of chunks (must be <= parallel in config)
   processRM -F mycube_IQUV.fits -f freqs.txt --chunks 50
-        """
+"""
     )
 
     parser.add_argument('-C', '--config',
-                        help='Path to existing config file')
+                        help='Config file name. Without -F: load an existing config. '
+                             'With -F: name the new config (default: myconfig.txt). '
+                             'Saved to the working directory.')
     parser.add_argument('-F', '--fitsfile',
                         help='Path to FITS cube(s). Single full-Stokes IQUV cube '
                              '(e.g. mycube_IQUV.fits) OR two files in quotes '
@@ -323,8 +328,13 @@ def build_config_from_args(args, workdir):
     freqlist_abs = os.path.abspath(args.freqlist)
     freqlist = link_into_workdir(freqlist_abs, workdir, label="freqlist")
 
-    # Copy default config to workdir
-    config_path = os.path.join(workdir, 'myconfig.txt')
+    # Copy default config to workdir under user-chosen name (or 'myconfig.txt')
+    config_name = args.config if args.config else 'myconfig.txt'
+    if not config_name.endswith('.txt'):
+        config_name += '.txt'
+    config_path = os.path.join(workdir, os.path.basename(config_name))
+    if os.path.exists(config_path):
+        logger.warning(f"Overwriting existing config: {config_path}")
     shutil.copy2(DEFAULT_CONFIG, config_path)
     logger.info(f"Created config file: {config_path}")
 
@@ -548,20 +558,19 @@ def main():
     logger.info(f"Working directory: {workdir}")
     print()
 
-    # Case 1: User provided -C (existing config)
-    if args.config:
+    # -C alone: load an existing config file
+    # -F alone: build a new 'myconfig.txt' from CLI args
+    # -F with -C: build a new config with the user-chosen name
+    if args.fitsfile:
+        config_path = build_config_from_args(args, workdir)
+    elif args.config:
         config_path = os.path.abspath(args.config)
         if not os.path.exists(config_path):
             logger.error(f"Config file not found: {config_path}")
             sys.exit(1)
         logger.info(f"Using config: {config_path}")
-
-    # Case 2: User provided -F (build config from FITS file)
-    elif args.fitsfile:
-        config_path = build_config_from_args(args, workdir)
-
     else:
-        logger.error("Must provide either -C (config file) or -F (FITS file)")
+        logger.error("Must provide either -C (existing config file) or -F (FITS file).")
         sys.exit(1)
 
     # Validate config
