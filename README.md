@@ -46,24 +46,82 @@ processRM/
 
 ## Quick start (on ilifu)
 
+Each step below should be run **one at a time**. Read what it does before pasting it into your terminal — these commands modify your shell config, build a container, and submit SLURM jobs.
+
+### Step 1 — Clone the repo
+
+SSH into ilifu, then clone processRM into your home directory:
+
 ```bash
-# 1. Clone repo on ilifu
 git clone https://github.com/NJRSAM003/processRM.git ~/processRM
-cd ~/processRM && ./setup.sh && source ~/.bashrc
+```
 
-# 2. (One-time) Build the rm-env container
-cd ~/processRM/container && ./build_container.sh
+### Step 2 — Install processRM into your PATH
 
-# 3. Generate a config from your FITS file
-cd /path/to/your/working/directory
-processRM -F NGC1097_contcube.fits -f NGC1097_contcube.freqlist.txt --chunks 100
+This appends a few lines to your `~/.bashrc` so `processRM` is callable from anywhere:
 
-# 4. Submit the pipeline
+```bash
+cd ~/processRM
+./setup.sh
+source ~/.bashrc
+```
+
+Verify with:
+
+```bash
+processRM --help
+```
+
+### Step 3 — Build the rm-env Singularity container (one-time)
+
+This step is required only the first time. It builds the `rm-env.sif` container that holds Python + RM-Tools + dependencies. See [`container/README.md`](container/README.md) for build options (fakeroot / sudo / remote).
+
+```bash
+cd ~/processRM/container
+./build_container.sh
+```
+
+Once built, move the `.sif` to a shared project location and update `rm_container` in your config.
+
+### Step 4 — Move to your working directory
+
+`cd` into the directory that contains (or will contain) your FITS cube. All pipeline outputs land here.
+
+```bash
+cd /idia/projects/<your-project>/<your-workdir>
+```
+
+### Step 5 — Generate the pipeline config
+
+Either pass a full Stokes cube **or** separated Q + U cubes, plus a frequency list:
+
+```bash
+processRM -F NGC1097_contcube.fits \
+          -f NGC1097_contcube.freqlist.txt \
+          --chunks 100
+```
+
+This creates `myconfig.txt`, `submit_pipeline.sh`, and copies the per-stage scripts into the current directory. Open `myconfig.txt` and review the values before submitting.
+
+### Step 6 — Submit the pipeline
+
+```bash
 ./submit_pipeline.sh
+```
 
-# 5. Monitor progress
-./fullSummary           # one-shot
-./fullSummary --watch   # live updates
+This validates the containers, generates the SLURM sbatch files, and submits the array jobs.
+
+### Step 7 — Monitor progress
+
+```bash
+./fullSummary
+```
+
+Add `--watch` for live updates every 10 seconds, or `--errors` for the full error report:
+
+```bash
+./fullSummary --watch
+./fullSummary --errors
 ```
 
 ---
