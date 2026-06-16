@@ -35,10 +35,9 @@ processRM/
 │   └── merge_image_parts.py
 ├── aux_scripts/
 │   └── fullSummary           # Status monitor
-└── container/                # Singularity container def + build scripts
-    ├── rm-env.def
-    ├── build_container.sh
-    ├── inspect_rm_env.sh
+└── container/                # Singularity container
+    ├── rm-env.def             # Build recipe (rarely touched)
+    ├── download_container.sh  # Fetches rm-env.sif from GitHub Release
     └── README.md
 ```
 

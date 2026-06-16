@@ -9,7 +9,7 @@ This directory holds the Singularity definition for **rm-env.sif** — the conta
 
 ## You do not need to build this container
 
-A pre-built `rm-env.sif` is published with every processRM release on GitHub. **Just download it.** The build files (`rm-env.def`, `build_container.sh`, `inspect_rm_env.sh`) live here only so the container can be rebuilt or modified if needed.
+A pre-built `rm-env.sif` is published with every processRM release on GitHub. **Just run `./download_container.sh`.** The recipe `rm-env.def` lives here only so the container can be rebuilt or modified if needed.
 
 ---
 
@@ -81,20 +81,15 @@ If all three print usage text, the container is ready and processRM will use it 
 
 ---
 
-## (Advanced) Rebuilding the container
+## (Maintainers only) Rebuilding the container
 
-You only need this if you want to add or change packages inside the container — most users will never do this.
+Most users will never do this. ilifu does **not** allow `singularity build` (no sudo, no fakeroot support, login/transfer nodes block it outright), so you must build elsewhere:
 
-ilifu does **not** allow `singularity build` (no sudo, no fakeroot support, login/transfer nodes block it outright). You must build elsewhere:
-
-- **Option A — Sylabs Cloud** (no local install needed)
-  ```bash
-  singularity remote login
-  singularity build --remote rm-env.sif rm-env.def
-  ```
-- **Option B — Local Linux machine with sudo**
-  ```bash
-  sudo singularity build rm-env.sif rm-env.def
-  ```
+```bash
+sudo singularity build rm-env.sif rm-env.def              # local Linux machine with sudo
+# OR
+singularity remote login && \
+singularity build --remote rm-env.sif rm-env.def          # Sylabs Cloud, no local install
+```
 
 Then attach the new `rm-env.sif` to a new GitHub Release (drag-drop in the Release UI).

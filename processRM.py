@@ -422,7 +422,7 @@ if [ -z "$RM_CONTAINER" ]; then
 fi
 if [ ! -f "$RM_CONTAINER" ]; then
     echo "ERROR: rm_container not found: $RM_CONTAINER"
-    echo "  Build it with: cd ~/processRM/container && ./build_container.sh"
+    echo "  Download it with: cd ~/processRM/container && ./download_container.sh"
     exit 1
 fi
 if [ ! -f "$CASA_CONTAINER" ]; then
