@@ -148,6 +148,9 @@ Examples:
                         help='Number of chunks to split image into (must be <= parallel in config)')
     parser.add_argument('--workdir', default=None,
                         help='Working directory (defaults to current directory)')
+    parser.add_argument('--rm-container', dest='rm_container_override', default=None,
+                        help='Override path to rm-env.sif (default: ~/processRM/container/rm-env.sif). '
+                             'Use this if you moved the container to a project-shared location.')
     parser.add_argument('--version', action='version', version=f'processRM {__version__}')
 
     args = parser.parse_args()
@@ -314,10 +317,24 @@ def build_config_from_args(args, workdir):
     config.set('data', 'freqlist', f"'{freqlist}'")
 
     if args.chunks:
-        config.set('rmsynthesis', 'chunks', str(args.chunks))
+        config.set('chunking', 'chunks', str(args.chunks))
 
     if args.submit:
         config.set('slurm', 'submit', 'True')
+
+    # Resolve rm_container path: --rm-container > current value > default location
+    default_rm_container = os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
+    if args.rm_container_override:
+        rm_container = os.path.abspath(os.path.expanduser(args.rm_container_override))
+    else:
+        existing = config.get('slurm', 'rm_container', fallback="''").strip("'\"")
+        rm_container = existing or default_rm_container
+    config.set('slurm', 'rm_container', f"'{rm_container}'")
+
+    if not os.path.exists(rm_container):
+        logger.warning(f"  -> rm_container path does not exist yet: {rm_container}")
+        logger.warning("     If you haven't run setup.sh, do so to fetch the container.")
+        logger.warning("     Or pass --rm-container <path> to point at an existing .sif.")
 
     with open(config_path, 'w') as f:
         config.write(f)

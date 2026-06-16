@@ -39,7 +39,7 @@ time = '10:00:00'                 # Walltime per chunk
 time_merge = '20:00:00'           # Walltime per merge job
 account = 'b03-idia-ag'
 casa_container = '/idia/software/containers/casa-6.4.4-modular.simg'
-rm_container = '/idia/projects/uct-mega-hi/Pro_M_Prac/containers/rm-env.sif'
+rm_container = ''                 # Empty = use ~/processRM/container/rm-env.sif (auto-filled by processRM)
 submit = False                    # Auto-submit after generation
 
 [merge]

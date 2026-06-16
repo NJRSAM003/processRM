@@ -72,15 +72,7 @@ Verify with:
 processRM --help
 ```
 
-After this finishes, **move the container to a SLURM-readable location**, e.g.:
-
-```bash
-mv ~/processRM/container/rm-env.sif /idia/projects/<your-project>/containers/rm-env.sif
-```
-
-(You'll point your config at this location in Step 4.)
-
-See [`container/README.md`](container/README.md) for more on the container (pinning a specific version, rebuilding from source, etc.).
+processRM will use `~/processRM/container/rm-env.sif` by default. You can leave it there, or move it to a project-shared location and either edit `[slurm] rm_container` in your config or pass `--rm-container <path>` to `processRM`. See [`container/README.md`](container/README.md) for more.
 
 ### Step 3 — Move to your working directory
 
