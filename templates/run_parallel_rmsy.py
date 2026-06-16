@@ -26,7 +26,7 @@ import numpy as np
 
 cat /etc/hostname
 
-singularity exec /users/lennart/container/meerkat-pol.simg python3 /users/lennart/software/beta/mightee_pol/cube_split.py --slurmArrayTaskId ${SLURM_ARRAY_TASK_ID}
+singularity --quiet exec /users/lennart/container/meerkat-pol.simg python3 /users/lennart/software/beta/mightee_pol/cube_split.py --slurmArrayTaskId ${SLURM_ARRAY_TASK_ID}
 '''
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
 
@@ -92,7 +92,7 @@ def run_rmsy_job(args):
         exportfits(imagename=f"processing/{outfile}.im", fitsimage=f"processing/{outfile}".replace(".im",""))
 
 #        try:
-#            command = f'singularity exec /idia/software/containers/rm-csromer.sif /users/lennart/venv/bin/rmsynth3d {c.inputFitsStokesQ} {c.inputFitsStokesU} {c.freqList} -o part_{c.slurmArrayTaskId}_ && '
+#            command = f'singularity --quiet exec /idia/software/containers/rm-csromer.sif /users/lennart/venv/bin/rmsynth3d {c.inputFitsStokesQ} {c.inputFitsStokesU} {c.freqList} -o part_{c.slurmArrayTaskId}_ && '
 #            command += f'/users/lennart/venv/bin/rmclean3d -c {c.rmsyCleanThrethold} -n {c.rmsyCleanIterations} part_{c.slurmArrayTaskId}_FDF_tot_dirty.fits part_{c.slurmArrayTaskId}_RMSF_tot.fits'
 #            sbatchResult = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, shell=True)
 #            sbatchResultStd = sbatchResult.stdout.replace("\n", " ")
@@ -115,7 +115,7 @@ def write_sbatch_file(args):
     # Now accepts --account parameter, defaults to b09-mightee-ag if not provided.
     # [CHANGE 2026-06-11]: Containerised all binaries (no venv calls)
     # Reason: Match processMeerKAT design — every binary is invoked via
-    # 'singularity exec <container>'. No reliance on host filesystem venvs.
+    # 'singularity --quiet exec <container>'. No reliance on host filesystem venvs.
     # [CHANGE 2026-06-11]: Resume safety — skip stages whose output already exists
     # Reason: Long-running jobs sometimes fail or hit SLURM time limits. Re-submitting
     # the same array job now picks up where it left off instead of redoing everything.
@@ -164,7 +164,7 @@ if [ -f "$Q_CHUNK" ] && [ -f "$U_CHUNK" ]; then
 else
     echo "[Stage 1] Chunking inputs for task $TASKID"
     t0=$SECONDS
-    singularity exec {args.casaContainer} python3 {__file__} --parallel {args.parallel} --slurmArrayTaskId ${{TASKID}} --inputFitsStokesQ {args.inputFitsStokesQ} --inputFitsStokesU {args.inputFitsStokesU} --freqList {args.freqList} --casaContainer {args.casaContainer} --rmContainer {args.rmContainer}
+    singularity --quiet exec {args.casaContainer} python3 {__file__} --parallel {args.parallel} --slurmArrayTaskId ${{TASKID}} --inputFitsStokesQ {args.inputFitsStokesQ} --inputFitsStokesU {args.inputFitsStokesU} --freqList {args.freqList} --casaContainer {args.casaContainer} --rmContainer {args.rmContainer}
     rc=$?
     log_stage "chunking" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -176,7 +176,7 @@ if [ -f "$FDF_DIRTY" ]; then
 else
     echo "[Stage 2] Running rmsynth3d for task $TASKID"
     t0=$SECONDS
-    singularity exec {args.rmContainer} rmsynth3d -l 1000 "$Q_CHUNK" "$U_CHUNK" {args.freqList} -o part_${{TASKID}}_
+    singularity --quiet exec {args.rmContainer} rmsynth3d -l 1000 "$Q_CHUNK" "$U_CHUNK" {args.freqList} -o part_${{TASKID}}_
     rc=$?
     log_stage "rmsynth" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -188,7 +188,7 @@ if [ -f "$FDF_CLEAN" ]; then
 else
     echo "[Stage 3] Running rmclean3d for task $TASKID"
     t0=$SECONDS
-    singularity exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {('-w ' + str(args.rmsyCleanWindow)) if args.rmsyCleanWindow > 0 else ''} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
+    singularity --quiet exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {('-w ' + str(args.rmsyCleanWindow)) if args.rmsyCleanWindow > 0 else ''} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
     rc=$?
     log_stage "rmclean" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi

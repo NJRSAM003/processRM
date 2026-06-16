@@ -528,7 +528,7 @@ echo "Config:  $CONFIG"
 echo ""
 
 read_cfg () {{
-    singularity exec __RM_CONTAINER__ python3 -c "
+    singularity --quiet exec __RM_CONTAINER__ python3 -c "
 import config_parser
 t,_ = config_parser.parse_config('$CONFIG')
 v = t.get('$1', {{}}).get('$2', '')
@@ -558,7 +558,7 @@ echo ""
 # Stage 1: Stokes Q/U extraction (only if full IQUV cube was supplied)
 if [ -n "$FITS_FULL" ]; then
     echo "[Stage 1] Extracting Stokes Q/U from full cube..."
-    singularity exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
+    singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
     BASENAME=$(basename "$FITS_FULL" .fits)
     FITS_Q="${{BASENAME}}.stokesQ.fits"
     FITS_U="${{BASENAME}}.stokesU.fits"
@@ -571,7 +571,7 @@ fi
 # Stage 2: Generate the RM synthesis array sbatch
 echo ""
 echo "[Stage 2] Generating run_parallel_rmsy.sbatch..."
-singularity exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \
+singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \
     --inputFitsStokesQ "$FITS_Q" \
     --inputFitsStokesU "$FITS_U" \
     --freqList "$FREQLIST" \
@@ -594,7 +594,7 @@ echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY"
 echo ""
 echo "[Stage 4] Generating merge_image_parts.sbatch..."
 INPUT_CUBE="${{FITS_FULL:-$FITS_Q}}"
-singularity exec "$RM_CONTAINER" python3 -c "
+singularity --quiet exec "$RM_CONTAINER" python3 -c "
 import os, sys
 sys.path.insert(0, '.')
 import merge_image_parts as m

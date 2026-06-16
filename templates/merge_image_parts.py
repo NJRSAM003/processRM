@@ -223,7 +223,7 @@ def create_all_cubes(inputcube, slurmArrayTaskId):
     rm_container = os.environ.get("PROCESSRM_RM_CONTAINER", "")
     for inputName in listing_basenames:
         if rm_container:
-            command = f"singularity exec {rm_container} fits2idia -s -p {inputName}"
+            command = f"singularity --quiet exec {rm_container} fits2idia -s -p {inputName}"
         else:
             command = f"fits2idia -s -p {inputName}"
         print(f"Command: {command}")
@@ -250,7 +250,7 @@ def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa
     # Reason: Match processMeerKAT design — script runs inside rm-env container
     # via 'singularity exec'. Environment variable PROCESSRM_RM_CONTAINER is passed
     # so fits2idia call inside the script also uses the container.
-    runner = f"singularity exec {rm_container}" if rm_container else ""
+    runner = f"singularity --quiet exec {rm_container}" if rm_container else ""
     env_export = f"export PROCESSRM_RM_CONTAINER={rm_container};" if rm_container else ""
     sbatch_content = f'''#!/bin/bash
 #SBATCH --array=1-{length_listing_basenames}%{length_listing_basenames}
