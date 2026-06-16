@@ -256,7 +256,14 @@ Examples:
         """
     )
 
-    parser.add_argument('--parallel', type=int, required=True,
+    # Accept '100000', '100000.0', '1e5' - all mean the same thing.
+    def _lenient_int(x):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return int(float(x))
+
+    parser.add_argument('--parallel', type=_lenient_int, required=True,
                         help='Number of parallel tasks to split the image into')
     parser.add_argument('--inputFitsStokesQ',
                         help='Path to Stokes Q FITS cube')
@@ -264,7 +271,7 @@ Examples:
                         help='Path to Stokes U FITS cube')
     parser.add_argument('--freqList',
                         help='Path to frequency list file (one frequency per line in Hz)')
-    parser.add_argument('--slurmArrayTaskId', type=int,
+    parser.add_argument('--slurmArrayTaskId', type=_lenient_int,
                         help='SLURM array task ID (set by SLURM, used to process one strip)')
     parser.add_argument('--rmsyCleanThrethold', type=float, default=0.0000010,
                         help='RM clean threshold (default: 0.0000010)')
@@ -272,7 +279,7 @@ Examples:
                         help='-w WINDOW for rmclean3d. 0 = skip second pass (default).')
     parser.add_argument('--rmsyCleanGain', type=float, default=0.1,
                         help='-g GAIN for rmclean3d (default: 0.1)')
-    parser.add_argument('--rmsyCleanIterations', type=int, default=50,
+    parser.add_argument('--rmsyCleanIterations', type=_lenient_int, default=50,
                         help='RM clean iterations (default: 50)')
     parser.add_argument('--account', default='b09-mightee-ag',
                         help='SLURM account for job submission (default: b09-mightee-ag)')
