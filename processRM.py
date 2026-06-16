@@ -788,6 +788,10 @@ def cleanup_run_artifacts(workdir, keep_config=None):
                 pass
 
     # 3) any leftover symlinks in the workdir (RUN's [data] links)
+    #    plus stray CASA log files (e.g. casa-20260617-...log) that the
+    #    extraction stage dumps into the workdir when it imports
+    #    casatools/casatasks.
+    import fnmatch
     try:
         for entry in os.listdir(workdir):
             if keep_config and entry == os.path.basename(keep_config):
@@ -797,6 +801,12 @@ def cleanup_run_artifacts(workdir, keep_config=None):
                 try:
                     os.unlink(p)
                     removed.append(entry + ' (symlink)')
+                except OSError:
+                    pass
+            elif fnmatch.fnmatch(entry.lower(), 'casa*.log'):
+                try:
+                    os.unlink(p)
+                    removed.append(entry)
                 except OSError:
                     pass
     except OSError:
