@@ -354,7 +354,11 @@ def link_into_workdir(src_path, workdir, label="file"):
 
 def build_config_from_args(args, workdir):
     """
-    Build a new config file based on -F (FITS file) and -f (freq list) arguments.
+    BUILD mode: write a config file from -F / -f / etc. and exit.
+    No symlinks are created, no pipeline scripts are copied, no
+    submit_pipeline.sh is generated. The config records ABSOLUTE paths
+    to the input files; the RUN mode (-R) is what materialises symlinks
+    and scaffolding when the user is ready to actually launch.
     Returns the path to the new config file.
     """
     if not args.freqlist:
@@ -374,23 +378,19 @@ def build_config_from_args(args, workdir):
     fits_u = ''
 
     if len(fits_files) == 1:
-        fits_full_abs = os.path.abspath(fits_files[0])
-        if not os.path.exists(fits_full_abs):
-            logger.error(f"FITS file not found: {fits_full_abs}")
+        fits_full = os.path.abspath(fits_files[0])
+        if not os.path.exists(fits_full):
+            logger.error(f"FITS file not found: {fits_full}")
             sys.exit(1)
-        validate_ilifu_path(fits_full_abs, label="fits_full")
-        # Link into workdir so pipeline scripts can reference by basename
-        fits_full = link_into_workdir(fits_full_abs, workdir, label="fits_full")
+        validate_ilifu_path(fits_full, label="fits_full")
     elif len(fits_files) == 2:
-        fits_q_abs = os.path.abspath(fits_files[0])
-        fits_u_abs = os.path.abspath(fits_files[1])
-        for f in [fits_q_abs, fits_u_abs]:
+        fits_q = os.path.abspath(fits_files[0])
+        fits_u = os.path.abspath(fits_files[1])
+        for f in [fits_q, fits_u]:
             if not os.path.exists(f):
                 logger.error(f"FITS file not found: {f}")
                 sys.exit(1)
             validate_ilifu_path(f, label="fits_stokesQ/U")
-        fits_q = link_into_workdir(fits_q_abs, workdir, label="fits_stokesQ")
-        fits_u = link_into_workdir(fits_u_abs, workdir, label="fits_stokesU")
     else:
         logger.error(
             "ERROR: -F expects 1 file (full Stokes cube) or 2 files (Q U). "
@@ -398,8 +398,7 @@ def build_config_from_args(args, workdir):
         )
         sys.exit(1)
 
-    freqlist_abs = os.path.abspath(args.freqlist)
-    freqlist = link_into_workdir(freqlist_abs, workdir, label="freqlist")
+    freqlist = os.path.abspath(args.freqlist)
 
     # Copy default config to workdir under user-chosen name (or 'myconfig.txt')
     config_name = args.config if args.config else 'myconfig.txt'
@@ -460,11 +459,9 @@ def _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals):
         from astropy.io import fits
     except ImportError:
         return
-    sample = fits_full or fits_q
-    if not sample:
-        return
-    sample_path = os.path.join(workdir, sample)
-    if not os.path.exists(sample_path):
+    # Config now stores absolute paths (build-only mode), so use them directly.
+    sample_path = fits_full or fits_q
+    if not sample_path or not os.path.exists(sample_path):
         return
     try:
         naxis2 = fits.getheader(sample_path)['NAXIS2']
@@ -675,6 +672,43 @@ BANNER = r"""
 ==================================================================
 """
 
+def materialize_workdir_from_config(config_path, workdir):
+    """RUN-mode setup: read the config, create symlinks for the input files,
+    copy pipeline scripts in, and generate submit_pipeline.sh. Updates the
+    config so [data] paths become local basenames (matching the symlinks).
+    """
+    taskvals, _ = config_parser.parse_config(config_path)
+    data = taskvals.get('data', {})
+
+    updates = {}
+    for key in ('fits_full', 'fits_stokesQ', 'fits_stokesU', 'freqlist'):
+        path = (data.get(key) or '').strip()
+        if not path:
+            continue
+        # Already a local basename (no directory part)? leave it.
+        if os.path.basename(path) == path:
+            continue
+        if not os.path.exists(path):
+            logger.error(f"[data] {key} not found: {path}")
+            sys.exit(1)
+        basename = link_into_workdir(path, workdir, label=key)
+        updates[('data', key)] = f"'{basename}'"
+
+    if updates:
+        update_config_inplace(config_path, updates)
+
+    # Setup subdirectories now that we are actually about to run
+    for sub in ['logs', 'processing', 'errors']:
+        os.makedirs(os.path.join(workdir, sub), exist_ok=True)
+    for sub in ['extract', 'rmsynth', 'rmclean', 'merge']:
+        os.makedirs(os.path.join(workdir, 'errors', sub), exist_ok=True)
+
+    copy_pipeline_scripts(workdir)
+    shutil.copy2(os.path.join(SCRIPT_DIR, 'config_parser.py'),
+                 os.path.join(workdir, 'config_parser.py'))
+    return generate_submit_script(workdir, config_path)
+
+
 def main():
     print(BANNER, flush=True)
     args = parse_args()
@@ -682,7 +716,10 @@ def main():
     # Ilifu environment check (processRM is ilifu-only)
     check_ilifu_environment()
 
-    workdir = setup_workdir(args.workdir)
+    workdir = args.workdir or os.getcwd()
+    workdir = os.path.abspath(workdir)
+    if not os.path.exists(workdir):
+        os.makedirs(workdir)
 
     print()
     logger.info(f"processRM v{__version__}")
@@ -690,27 +727,48 @@ def main():
     print()
 
     # Mode selection:
-    #   -F builds a new config from FITS inputs (-C optional, names it)
-    #   -R runs an existing config (regenerates submit_pipeline.sh from it)
+    #   -F BUILD mode: only writes/updates the config file
+    #   -R RUN mode:   reads the config, creates symlinks, copies scripts,
+    #                  generates submit_pipeline.sh, and (with -s) submits.
     # The two modes are mutually exclusive.
     if args.fitsfile and args.run_config:
         logger.error("Cannot use -F (build) and -R (run) at the same time.")
         sys.exit(1)
 
     if args.fitsfile:
+        # BUILD: just write the config and stop.
         config_path = build_config_from_args(args, workdir)
-    elif args.run_config:
-        config_path = os.path.abspath(args.run_config)
-        if not os.path.exists(config_path):
-            logger.error(f"Config file not found: {config_path}")
+        try:
+            config_parser.validate_config(config_path)
+            logger.info("Config validated successfully.")
+        except (ValueError, KeyError, FileNotFoundError) as e:
+            logger.error(f"Config validation failed: {e}")
             sys.exit(1)
-        logger.info(f"Running with config: {config_path}")
-    else:
+
+        print("\n" + "=" * 50)
+        print("  processRM config built!")
+        print("=" * 50)
+        print(f"  Workdir:    {workdir}")
+        print(f"  Config:     {config_path}")
+        print()
+        print("  Review/edit the config, then run the pipeline:")
+        print(f"     processRM -R {os.path.basename(config_path)}")
+        print("=" * 50)
+        print()
+        return
+
+    if not args.run_config:
         logger.error("Must provide either -F (build mode) or -R (run mode).")
         logger.error("Try 'processRM --help' for examples.")
         sys.exit(1)
 
-    # Validate config
+    # RUN mode
+    config_path = os.path.abspath(args.run_config)
+    if not os.path.exists(config_path):
+        logger.error(f"Config file not found: {config_path}")
+        sys.exit(1)
+    logger.info(f"Running with config: {config_path}")
+
     try:
         config_parser.validate_config(config_path)
         logger.info("Config validated successfully.")
@@ -719,13 +777,7 @@ def main():
         sys.exit(1)
 
     print()
-
-    # Copy scripts and generate submit_pipeline.sh
-    copy_pipeline_scripts(workdir)
-    # Also copy config_parser into workdir so submit_pipeline.sh can use it
-    shutil.copy2(os.path.join(SCRIPT_DIR, 'config_parser.py'),
-                 os.path.join(workdir, 'config_parser.py'))
-    submit_script = generate_submit_script(workdir, config_path)
+    submit_script = materialize_workdir_from_config(config_path, workdir)
 
     # Auto-submit if -s flag was used
     if args.submit:
@@ -739,11 +791,11 @@ def main():
         print(f"  Workdir:    {workdir}")
         print(f"  Config:     {config_path}")
         print()
-        print(f"  To submit the pipeline, run:")
-        print(f"     ./submit_pipeline.sh")
+        print("  To submit the pipeline, run:")
+        print("     ./submit_pipeline.sh")
         print()
-        print(f"  To check status:")
-        print(f"     ./fullSummary")
+        print("  To check status:")
+        print("     ./fullSummary")
         print("=" * 50)
         print()
 
