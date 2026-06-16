@@ -1,0 +1,97 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+# ==================================================================
+#  RM-env Singularity Container Definition
+#  For processRM Pipeline (integrated with ilifu)
+#  Made by Amani - Made to make RM-synthesis easier
+# ==================================================================
+#
+# This container provides:
+#   - RM-Tools (rmsynth3d, rmclean3d)
+#   - numpy, scipy, astropy, matplotlib
+#   - All dependencies for RM synthesis
+#
+# Mirrors the ~/myvenvs/RM-env/ environment on ilifu.
+#
+# Build instructions:
+#   sudo singularity build rm-env.sif rm-env.def
+# OR (no sudo):
+#   singularity build --fakeroot rm-env.sif rm-env.def
+# OR (remote build via Sylabs):
+#   singularity build --remote rm-env.sif rm-env.def
+# ==================================================================
+
+%labels
+    Author Amani
+    Version 1.0
+    Description "RM-env container for processRM pipeline"
+    Platform ilifu
+
+%post
+    # Update system and install build essentials
+    apt-get update && apt-get install -y \
+        build-essential \
+        git \
+        wget \
+        curl \
+        gfortran \
+        libfftw3-dev \
+        libhdf5-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Upgrade pip
+    pip install --no-cache-dir --upgrade pip setuptools wheel
+
+    # Core scientific stack (pinned to working versions matching RM-env)
+    pip install --no-cache-dir \
+        "numpy>=1.21,<2.0" \
+        "scipy>=1.7" \
+        "astropy>=5.0" \
+        "matplotlib>=3.5" \
+        "h5py>=3.0" \
+        "click>=8.0"
+
+    # RM-Tools (rmsynth3d, rmclean3d binaries)
+    pip install --no-cache-dir RM-Tools
+
+    # fits2idia (IDIA's FITS to HDF5 converter, used in merge stage)
+    apt-get update && apt-get install -y \
+        cmake \
+        libcfitsio-dev \
+        zlib1g-dev \
+        && rm -rf /var/lib/apt/lists/*
+    git clone https://github.com/CARTAvis/fits2idia.git /tmp/fits2idia
+    cd /tmp/fits2idia && mkdir build && cd build && cmake .. && make -j4 && make install
+    cd / && rm -rf /tmp/fits2idia
+
+    # Verify the binaries got installed
+    which rmsynth3d
+    which rmclean3d
+    which fits2idia
+
+    # Create a marker file so users know what's inside
+    cat > /opt/rm-env-info.txt <<EOF
+RM-env Singularity Container
+============================
+Built for processRM pipeline
+Contains:
+  - Python 3.11
+  - RM-Tools (rmsynth3d, rmclean3d)
+  - numpy, scipy, astropy, matplotlib, h5py, click
+EOF
+
+%environment
+    export LC_ALL=C
+    export PATH="/usr/local/bin:$PATH"
+
+%runscript
+    echo "RM-env container (integrated with ilifu)"
+    echo "Made by Amani - Made to make RM-synthesis easier"
+    echo "Use: singularity exec rm-env.sif <command>"
+    exec "$@"
+
+%test
+    rmsynth3d --help > /dev/null 2>&1 && echo "rmsynth3d: OK" || echo "rmsynth3d: FAILED"
+    rmclean3d --help > /dev/null 2>&1 && echo "rmclean3d: OK" || echo "rmclean3d: FAILED"
+    python3 -c "import astropy, numpy, scipy" && echo "Python stack: OK"

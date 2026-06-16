@@ -1,0 +1,80 @@
+# ==================================================================
+#  Fix for CRVAL4 = 0 issue in FDF_tot* files (CARTA can't open)
+#  Made by Amani - Made to make RM-synthesis easier
+# ==================================================================
+#
+# PROBLEM:
+#   rmsynth3d leaves CRVAL4 = 0 on FDF_tot* outputs. This is an
+#   invalid Stokes value (valid: 1=I, 2=Q, 3=U, 4=V), so CARTA
+#   rejects them with "cannot determine coordinate axes from
+#   incomplete header".
+#
+# FIX:
+#   Set CRVAL4 = 1 (treat total polarised intensity as Stokes I).
+#
+# USAGE on ilifu (from within ~/RM_synthesis/CIRADA/RMcube/):
+#   1. Paste BLOCK 1 to fix the FITS headers
+#   2. Paste BLOCK 2 to regenerate the HDF5 files
+# ==================================================================
+
+
+# ------------------------------------------------------------------
+# BLOCK 1 — Fix CRVAL4 in all _tot/_maxPI/_peakRM FITS files
+# ------------------------------------------------------------------
+singularity exec /idia/software/containers/casa-6.4.4-modular.simg python3 <<'PYEOF'
+from astropy.io import fits
+import glob
+
+# All files that rmsynth3d/rmclean3d generate with bad CRVAL4
+target_patterns = [
+    'FDF_tot_dirty.fits',
+    'FDF_clean_tot.fits',
+    'FDF_CC_tot.fits',
+    'RMSF_tot.fits',
+    'FDF_maxPI.fits',
+    'FDF_peakRM.fits',
+]
+
+files_to_fix = []
+for pat in target_patterns:
+    files_to_fix.extend(glob.glob(pat))
+
+print("=" * 60)
+print(f"Found {len(files_to_fix)} candidate file(s):")
+for f in files_to_fix:
+    print(f"  - {f}")
+print("=" * 60)
+
+for f in files_to_fix:
+    try:
+        with fits.open(f, mode='update') as h:
+            crval4 = h[0].header.get('CRVAL4', None)
+            if crval4 == 0 or crval4 is None:
+                h[0].header['CRVAL4'] = 1
+                print(f"FIXED:  {f}  (CRVAL4: {crval4} -> 1)")
+            else:
+                print(f"OK:     {f}  (CRVAL4 = {crval4})")
+    except Exception as e:
+        print(f"ERROR:  {f}  ({e})")
+
+print("=" * 60)
+print("Header fix complete.")
+PYEOF
+
+
+# ------------------------------------------------------------------
+# BLOCK 2 — Regenerate the HDF5 files from the fixed FITS files
+# ------------------------------------------------------------------
+for f in FDF_tot_dirty.fits FDF_clean_tot.fits FDF_CC_tot.fits RMSF_tot.fits FDF_maxPI.fits FDF_peakRM.fits; do
+    if [ -f "$f" ]; then
+        echo "Regenerating HDF5 for: $f"
+        rm -f "${f%.fits}.hdf5"
+        fits2idia -s -p "$f"
+    else
+        echo "Skipping (not found): $f"
+    fi
+done
+
+echo "=================================================="
+echo "  Done! Open the .hdf5 files in CARTA to verify."
+echo "=================================================="

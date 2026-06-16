@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.Python
+*.so
+
+# Containers (too large for git)
+container/*.sif
+container/*.simg
+
+# Pipeline-generated outputs (never commit run artifacts)
+processing/
+logs/
+errors/
+*.sbatch
+*.fits
+*.hdf5
+myconfig.txt
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~

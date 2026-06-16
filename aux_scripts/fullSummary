@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""
+==================================================================
+  fullSummary - processRM Pipeline Status Monitor
+  (integrated with ilifu)
+  Made by Amani - Made to make RM-synthesis easier
+==================================================================
+
+Displays the current state of an active processRM pipeline:
+  - Per-stage progress bars (extraction / RM synthesis / RM clean / merge)
+  - SLURM job IDs and their status (PENDING / RUNNING / COMPLETED / FAILED)
+  - Memory usage per running job
+  - Error summary (categorised by stage)
+  - List of output files generated so far
+
+Usage:
+  ./fullSummary             # one-shot report
+  ./fullSummary --watch     # refresh every 10 seconds
+  ./fullSummary --errors    # show full error details
+"""
+
+import os
+import sys
+import subprocess
+import argparse
+import glob
+import time
+import re
+from datetime import datetime
+from collections import defaultdict
+
+# ----------------- Cosmetic helpers -----------------
+class C:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+    GREY = '\033[90m'
+
+
+def bar(done, total, width=40, label=""):
+    """Render a tqdm-like static progress bar."""
+    if total == 0:
+        pct = 0
+    else:
+        pct = done / total
+    filled = int(pct * width)
+    bar_str = '█' * filled + '░' * (width - filled)
+    return f"{label:<14} [{bar_str}] {done}/{total} ({pct*100:5.1f}%)"
+
+
+# ----------------- SLURM helpers -----------------
+def squeue_for_user():
+    """Get current SLURM jobs for the user."""
+    user = os.environ.get('USER', 'amani')
+    try:
+        result = subprocess.run(
+            ['squeue', '-u', user, '--format=%i|%j|%T|%M|%l|%R|%m'],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return []
+        lines = result.stdout.strip().split('\n')[1:]
+        jobs = []
+        for line in lines:
+            parts = line.split('|')
+            if len(parts) >= 7:
+                jobs.append({
+                    'jobid': parts[0].strip(),
+                    'name': parts[1].strip(),
+                    'state': parts[2].strip(),
+                    'time': parts[3].strip(),
+                    'timelimit': parts[4].strip(),
+                    'reason': parts[5].strip(),
+                    'mem': parts[6].strip(),
+                })
+        return jobs
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+
+def sacct_for_job(jobid):
+    """Get sacct info for a specific job (memory usage etc.)."""
+    try:
+        result = subprocess.run(
+            ['sacct', '-j', jobid, '--format=JobID,State,MaxRSS,Elapsed',
+             '--noheader', '--parsable2'],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+# ----------------- Stage analysis -----------------
+def count_extraction(workdir):
+    """How many Stokes files have been extracted."""
+    expected = ['*.stokesQ.fits', '*.stokesU.fits', '*.freqlist.txt']
+    found = 0
+    for pat in expected:
+        if glob.glob(os.path.join(workdir, pat)):
+            found += 1
+    return found, len(expected)
+
+
+def count_chunked_inputs(workdir):
+    """How many input chunks have been created in processing/."""
+    pattern = os.path.join(workdir, 'processing', 'part_*_*stokesQ.fits')
+    return len(glob.glob(pattern))
+
+
+def count_rmsynth(workdir):
+    """How many RM synth output parts exist (FDF_tot_dirty)."""
+    pattern = os.path.join(workdir, 'processing', 'part_*_FDF_tot_dirty.fits')
+    return len(glob.glob(pattern))
+
+
+def count_rmclean(workdir):
+    """How many RM clean output parts exist (FDF_clean_tot)."""
+    pattern = os.path.join(workdir, 'processing', 'part_*_FDF_clean_tot.fits')
+    return len(glob.glob(pattern))
+
+
+def count_merged(workdir):
+    """How many merged output cubes exist in the workdir."""
+    merged_files = []
+    candidates = [
+        'FDF_tot_dirty.fits', 'FDF_clean_tot.fits', 'FDF_CC_tot.fits',
+        'FDF_im_dirty.fits', 'FDF_real_dirty.fits',
+        'FDF_clean_im.fits', 'FDF_clean_real.fits',
+        'FDF_CC_im.fits', 'FDF_CC_real.fits',
+        'FDF_maxPI.fits', 'FDF_peakRM.fits',
+        'RMSF_tot.fits', 'RMSF_im.fits', 'RMSF_real.fits', 'RMSF_FWHM.fits',
+    ]
+    for f in candidates:
+        if os.path.exists(os.path.join(workdir, f)):
+            merged_files.append(f)
+    return len(merged_files), len(candidates), merged_files
+
+
+def read_chunks_from_config(workdir):
+    """Get the chunks count from config (if it exists) for the denominator."""
+    config_files = sorted(glob.glob(os.path.join(workdir, '*.txt')))
+    for cfg in config_files:
+        try:
+            with open(cfg) as f:
+                content = f.read()
+            m = re.search(r'^chunks\s*=\s*(\d+)', content, re.MULTILINE)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+    return 100  # fallback default
+
+
+# ----------------- Error analysis -----------------
+# ----------------- Timing analysis -----------------
+def read_timings(workdir):
+    """
+    Parse logs/timings.csv and return dict of stats per stage:
+      { stage: {count, avg_sec, min_sec, max_sec, ok, fail, skipped} }
+    """
+    csv_path = os.path.join(workdir, 'logs', 'timings.csv')
+    if not os.path.exists(csv_path):
+        return {}
+
+    stats = defaultdict(lambda: {'durations': [], 'ok': 0, 'fail': 0, 'skipped': 0})
+    try:
+        with open(csv_path) as f:
+            next(f, None)  # skip header
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) < 5:
+                    continue
+                jobid, taskid, stage, duration, status = parts[:5]
+                try:
+                    dur = int(duration)
+                except ValueError:
+                    continue
+                if status == 'OK':
+                    stats[stage]['durations'].append(dur)
+                    stats[stage]['ok'] += 1
+                elif status == 'FAIL':
+                    stats[stage]['fail'] += 1
+                elif status == 'skipped':
+                    stats[stage]['skipped'] += 1
+    except Exception as e:
+        return {}
+
+    result = {}
+    for stage, info in stats.items():
+        durs = info['durations']
+        result[stage] = {
+            'count': len(durs),
+            'avg': sum(durs) / len(durs) if durs else 0,
+            'min': min(durs) if durs else 0,
+            'max': max(durs) if durs else 0,
+            'ok': info['ok'],
+            'fail': info['fail'],
+            'skipped': info['skipped'],
+        }
+    return result
+
+
+def fmt_seconds(sec):
+    """Format seconds into H:MM:SS or M:SS."""
+    sec = int(sec)
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def collect_errors(workdir):
+    """Walk error subdirectories and the logs/ folder for failures."""
+    errors_dir = os.path.join(workdir, 'errors')
+    logs_dir = os.path.join(workdir, 'logs')
+
+    by_stage = defaultdict(list)
+
+    # Organised errors directory
+    if os.path.isdir(errors_dir):
+        for stage in os.listdir(errors_dir):
+            stage_path = os.path.join(errors_dir, stage)
+            if os.path.isdir(stage_path):
+                for err_file in glob.glob(os.path.join(stage_path, '*')):
+                    by_stage[stage].append(err_file)
+
+    # Slurm .err files in logs/
+    if os.path.isdir(logs_dir):
+        for err_file in glob.glob(os.path.join(logs_dir, '*.err')):
+            if os.path.getsize(err_file) > 100:  # skip near-empty err files
+                if 'rmsy' in err_file:
+                    by_stage['rmsynth/rmclean'].append(err_file)
+                elif 'merge' in err_file:
+                    by_stage['merge'].append(err_file)
+                else:
+                    by_stage['unknown'].append(err_file)
+
+    return dict(by_stage)
+
+
+# ----------------- Display -----------------
+def display_summary(workdir, show_errors=False):
+    """Display the pipeline summary."""
+    print(f"{C.BOLD}{C.CYAN}")
+    print("=" * 70)
+    print("  processRM Pipeline Status  (integrated with ilifu)")
+    print("  Made by Amani - Made to make RM-synthesis easier")
+    print("=" * 70)
+    print(f"{C.END}")
+    print(f"  Workdir:    {workdir}")
+    print(f"  Timestamp:  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print()
+
+    # Get total chunks expected
+    total_chunks = read_chunks_from_config(workdir)
+
+    # Stage progress
+    print(f"{C.BOLD}━━━ PIPELINE STAGES ━━━{C.END}")
+
+    extract_done, extract_total = count_extraction(workdir)
+    print(f"  {C.CYAN}{bar(extract_done, extract_total, label='Extraction')}{C.END}")
+
+    chunked = count_chunked_inputs(workdir)
+    print(f"  {C.CYAN}{bar(chunked, total_chunks, label='Chunking')}{C.END}")
+
+    rmsynth = count_rmsynth(workdir)
+    print(f"  {C.CYAN}{bar(rmsynth, total_chunks, label='RM Synthesis')}{C.END}")
+
+    rmclean = count_rmclean(workdir)
+    print(f"  {C.CYAN}{bar(rmclean, total_chunks, label='RM Clean')}{C.END}")
+
+    merged_count, merged_total, merged_files = count_merged(workdir)
+    print(f"  {C.CYAN}{bar(merged_count, merged_total, label='Merging')}{C.END}")
+    print()
+
+    # SLURM jobs
+    print(f"{C.BOLD}━━━ ACTIVE SLURM JOBS ━━━{C.END}")
+    jobs = squeue_for_user()
+    relevant_jobs = [j for j in jobs if any(k in j['name'].lower()
+                                             for k in ['rmsy', 'merge', 'cube'])]
+
+    if not relevant_jobs:
+        print(f"  {C.GREY}No active SLURM jobs found.{C.END}")
+    else:
+        print(f"  {'JOBID':<12} {'NAME':<20} {'STATE':<10} {'TIME':<10} "
+              f"{'TIMELIMIT':<10} {'MEM':<8}")
+        print(f"  {'-'*12} {'-'*20} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
+        for j in relevant_jobs:
+            color = C.GREEN if j['state'] == 'RUNNING' else (
+                C.YELLOW if j['state'] == 'PENDING' else C.RED
+            )
+            print(f"  {color}{j['jobid']:<12} {j['name']:<20} "
+                  f"{j['state']:<10} {j['time']:<10} {j['timelimit']:<10} "
+                  f"{j['mem']:<8}{C.END}")
+    print()
+
+    # Output files
+    print(f"{C.BOLD}━━━ OUTPUT FILES ━━━{C.END}")
+    if merged_files:
+        for f in merged_files:
+            full_path = os.path.join(workdir, f)
+            size_mb = os.path.getsize(full_path) / (1024 * 1024)
+            print(f"  {C.GREEN}✓{C.END} {f} ({size_mb:.1f} MB)")
+    else:
+        print(f"  {C.GREY}No merged output files yet.{C.END}")
+    print()
+
+    # Timing analysis
+    print(f"{C.BOLD}━━━ PER-STAGE TIMINGS ━━━{C.END}")
+    timings = read_timings(workdir)
+    if not timings:
+        print(f"  {C.GREY}No timing log yet (logs/timings.csv not found).{C.END}")
+    else:
+        print(f"  {'STAGE':<10} {'COUNT':<7} {'AVG':<10} {'MIN':<10} {'MAX':<10} "
+              f"{'OK':<5} {'FAIL':<5} {'SKIP':<5}")
+        print(f"  {'-'*10} {'-'*7} {'-'*10} {'-'*10} {'-'*10} {'-'*5} {'-'*5} {'-'*5}")
+        for stage in ['chunking', 'rmsynth', 'rmclean', 'merge']:
+            if stage in timings:
+                t = timings[stage]
+                color = C.GREEN if t['fail'] == 0 else C.YELLOW
+                print(f"  {color}{stage:<10} {t['count']:<7} "
+                      f"{fmt_seconds(t['avg']):<10} {fmt_seconds(t['min']):<10} "
+                      f"{fmt_seconds(t['max']):<10} {t['ok']:<5} {t['fail']:<5} "
+                      f"{t['skipped']:<5}{C.END}")
+    print()
+
+    # Errors
+    print(f"{C.BOLD}━━━ ERROR SUMMARY ━━━{C.END}")
+    errors = collect_errors(workdir)
+    if not errors:
+        print(f"  {C.GREEN}No errors detected.{C.END}")
+    else:
+        for stage, err_files in errors.items():
+            print(f"  {C.RED}[{stage}]{C.END} {len(err_files)} error file(s)")
+            if show_errors:
+                for ef in err_files[:5]:
+                    print(f"     - {ef}")
+                if len(err_files) > 5:
+                    print(f"     ... and {len(err_files) - 5} more")
+    print()
+
+    if not show_errors and any(errors.values()):
+        print(f"  {C.GREY}Run with --errors for full details.{C.END}")
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="fullSummary - processRM Pipeline Status Monitor"
+    )
+    parser.add_argument('--watch', action='store_true',
+                        help='Continuously refresh every 10 seconds')
+    parser.add_argument('--errors', action='store_true',
+                        help='Show full error details')
+    parser.add_argument('--workdir', default=None,
+                        help='Pipeline working directory (defaults to current dir)')
+    parser.add_argument('--interval', type=int, default=10,
+                        help='Refresh interval in seconds (default: 10)')
+
+    args = parser.parse_args()
+    workdir = os.path.abspath(args.workdir) if args.workdir else os.getcwd()
+
+    if not os.path.exists(workdir):
+        print(f"{C.RED}ERROR: workdir not found: {workdir}{C.END}")
+        sys.exit(1)
+
+    if args.watch:
+        try:
+            while True:
+                os.system('clear')
+                display_summary(workdir, show_errors=args.errors)
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print(f"\n{C.GREY}fullSummary stopped.{C.END}")
+    else:
+        display_summary(workdir, show_errors=args.errors)
+
+
+if __name__ == '__main__':
+    main()
