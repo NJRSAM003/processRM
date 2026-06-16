@@ -599,7 +599,7 @@ print(t['rmclean'].get('gain', 0.1))
 # Stage 1: Extract Stokes Q/U if user provided full cube
 if [ -n "$FITS_FULL" ]; then
     echo "[Stage 1] Extracting Stokes Q/U from full cube..."
-    ./create_subimage.py --inputcube "$FITS_FULL"
+    singularity exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
     BASENAME=$(basename "$FITS_FULL" .fits)
     FITS_Q="${{BASENAME}}.stokesQ.fits"
     FITS_U="${{BASENAME}}.stokesU.fits"
@@ -612,7 +612,7 @@ fi
 # Stage 2: Generate RM synthesis sbatch + submit
 echo ""
 echo "[Stage 2] Generating RM synthesis sbatch file..."
-./run_parallel_rmsy.py --parallel "$CHUNKS" \\
+singularity exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \\
     --inputFitsStokesQ "$FITS_Q" \\
     --inputFitsStokesU "$FITS_U" \\
     --freqList "$FREQLIST" \\
@@ -634,7 +634,7 @@ echo "  -> Submitted RM synthesis: SLURM job $SLURMID_RMSY"
 echo ""
 echo "[Stage 4] Generating and submitting merge job..."
 INPUT_CUBE="${{FITS_FULL:-$FITS_Q}}"
-./merge_image_parts.py --inputcube "$INPUT_CUBE" --account "$ACCOUNT" \\
+singularity exec "$RM_CONTAINER" python3 ./merge_image_parts.py --inputcube "$INPUT_CUBE" --account "$ACCOUNT" \\
     --rmContainer "$RM_CONTAINER" --casaContainer "$CASA_CONTAINER" &
 sleep 5
 
