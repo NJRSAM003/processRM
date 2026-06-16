@@ -744,7 +744,7 @@ BANNER = r"""
 ==================================================================
 """
 
-RUN_GENERATED_ARTIFACTS = (
+RUN_GENERATED_FILES = (
     'submit_pipeline.sh', 'processRM_orchestrate.sbatch',
     'run_parallel_rmsy.sbatch', 'merge_image_parts.sbatch',
     'config_parser.py', 'create_subimage.py', 'create_subimage_rmsy_cube.py',
@@ -752,12 +752,23 @@ RUN_GENERATED_ARTIFACTS = (
     'killJobs', 'killJobs_orchestrator', 'killJobs_rmsynth_clean', 'killJobs_merge',
 )
 
+RUN_GENERATED_DIRS = (
+    'logs', 'processing', 'errors', '__pycache__',
+)
 
-def cleanup_run_artifacts(workdir):
-    """Remove RUN-mode-generated files so the user can fix config and retry cleanly.
-    Leaves the config file, any input data, and logs/processing/errors/ alone."""
+
+def cleanup_run_artifacts(workdir, keep_config=None):
+    """Wipe everything in `workdir` that RUN mode could have produced so the
+    user is left with a clean state (their config file only). Removes:
+      - every symlink (RUN mode is the only thing that creates symlinks here)
+      - every named generated file (sbatch, scripts, killJobs*)
+      - every named generated directory (logs/, processing/, errors/, __pycache__/)
+    `keep_config` (basename) is explicitly preserved.
+    """
     removed = []
-    for name in RUN_GENERATED_ARTIFACTS:
+
+    # 1) named files
+    for name in RUN_GENERATED_FILES:
         p = os.path.join(workdir, name)
         if os.path.islink(p) or os.path.exists(p):
             try:
@@ -765,15 +776,32 @@ def cleanup_run_artifacts(workdir):
                 removed.append(name)
             except OSError:
                 pass
-    # Drop any broken symlinks (e.g. our [data] symlinks pointing at moved sources)
+
+    # 2) named directories (recursive)
+    for name in RUN_GENERATED_DIRS:
+        p = os.path.join(workdir, name)
+        if os.path.isdir(p) and not os.path.islink(p):
+            try:
+                shutil.rmtree(p)
+                removed.append(name + '/')
+            except OSError:
+                pass
+
+    # 3) any leftover symlinks in the workdir (RUN's [data] links)
     try:
         for entry in os.listdir(workdir):
+            if keep_config and entry == os.path.basename(keep_config):
+                continue
             p = os.path.join(workdir, entry)
-            if os.path.islink(p) and not os.path.exists(p):
-                os.unlink(p)
-                removed.append(entry + ' (broken symlink)')
+            if os.path.islink(p):
+                try:
+                    os.unlink(p)
+                    removed.append(entry + ' (symlink)')
+                except OSError:
+                    pass
     except OSError:
         pass
+
     if removed:
         logger.warning(f"Cleaned up stale artifacts: {', '.join(removed)}")
 
@@ -818,7 +846,7 @@ def materialize_workdir_from_config(config_path, workdir):
         logger.error(f"   processRM -F /full/path/to/cube.fits -f /full/path/to/freqs.txt "
                      f"-C {os.path.basename(config_path)}")
         logger.error("")
-        cleanup_run_artifacts(workdir)
+        cleanup_run_artifacts(workdir, keep_config=config_path)
         logger.error("Run aborted. No SLURM jobs were submitted.")
         sys.exit(1)
 
