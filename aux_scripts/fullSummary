@@ -13,7 +13,8 @@ Displays the current state of an active processRM pipeline:
   - List of output files generated so far
 
 Usage:
-  ./fullSummary             # one-shot report
+  ./fullSummary             # one-shot report (compact SLURM summary)
+  ./fullSummary -v          # full per-task SLURM jobs table
   ./fullSummary --watch     # refresh every 10 seconds
   ./fullSummary --errors    # show full error details
 """
@@ -308,7 +309,7 @@ def collect_errors(workdir):
 
 
 # ----------------- Display -----------------
-def display_summary(workdir, show_errors=False):
+def display_summary(workdir, show_errors=False, verbose=False):
     """Display the pipeline summary."""
     print(f"{C.BOLD}{C.CYAN}")
     print("=" * 70)
@@ -361,7 +362,7 @@ def display_summary(workdir, show_errors=False):
 
     if not relevant_jobs:
         print(f"  {C.GREY}No active SLURM jobs found.{C.END}")
-    else:
+    elif verbose:
         print(f"  {'JOBID':<12} {'NAME':<20} {'STATE':<10} {'TIME':<10} "
               f"{'TIMELIMIT':<10} {'MEM':<8}")
         print(f"  {'-'*12} {'-'*20} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
@@ -372,6 +373,24 @@ def display_summary(workdir, show_errors=False):
             print(f"  {color}{j['jobid']:<12} {j['name']:<20} "
                   f"{j['state']:<10} {j['time']:<10} {j['timelimit']:<10} "
                   f"{j['mem']:<8}{C.END}")
+    else:
+        # Compact summary: group by (name, state), report counts + a sample TIME
+        from collections import Counter
+        by_key = Counter()
+        sample_time = {}
+        for j in relevant_jobs:
+            key = (j['name'], j['state'])
+            by_key[key] += 1
+            sample_time.setdefault(key, j['time'])
+        print(f"  {'NAME':<20} {'STATE':<10} {'COUNT':<7} {'~TIME':<10}")
+        print(f"  {'-'*20} {'-'*10} {'-'*7} {'-'*10}")
+        for (name, state), count in sorted(by_key.items()):
+            color = C.GREEN if state == 'RUNNING' else (
+                C.YELLOW if state == 'PENDING' else C.RED
+            )
+            print(f"  {color}{name:<20} {state:<10} {count:<7} "
+                  f"{sample_time[(name, state)]:<10}{C.END}")
+        print(f"  {C.GREY}(use -v / --verbose for the full per-task table){C.END}")
     print()
 
     # Output files
@@ -430,6 +449,9 @@ def main():
     )
     parser.add_argument('--watch', action='store_true',
                         help='Continuously refresh every 10 seconds')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Show the full per-task SLURM jobs table '
+                             '(default shows a compact COUNT summary).')
     parser.add_argument('--errors', action='store_true',
                         help='Show full error details')
     parser.add_argument('--workdir', default=None,
@@ -448,12 +470,12 @@ def main():
         try:
             while True:
                 os.system('clear')
-                display_summary(workdir, show_errors=args.errors)
+                display_summary(workdir, show_errors=args.errors, verbose=args.verbose)
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             print(f"\n{C.GREY}fullSummary stopped.{C.END}")
     else:
-        display_summary(workdir, show_errors=args.errors)
+        display_summary(workdir, show_errors=args.errors, verbose=args.verbose)
 
 
 if __name__ == '__main__':
