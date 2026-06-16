@@ -134,7 +134,9 @@ Examples:
     parser.add_argument('-C', '--config',
                         help='Path to existing config file')
     parser.add_argument('-F', '--fitsfile',
-                        help='Path to FITS cube. Use quotes for two files: "Q.fits U.fits"')
+                        help='Path to FITS cube(s). Single full-Stokes IQUV cube '
+                             '(e.g. NGC1097_contcube.IQUV.fits) OR two files in quotes '
+                             '(e.g. "NGC1097.stokesQ.fits NGC1097.stokesU.fits")')
     parser.add_argument('-f', '--freqlist',
                         help='Path to frequency list (.txt). Required if -F is used.')
     parser.add_argument('-s', '--submit', action='store_true',
