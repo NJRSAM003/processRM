@@ -633,18 +633,18 @@ EOF
     chmod +x "$script"
 }}
 
-write_kill "killJobs_rmsynth" "$SLURMID_RMSY" "RM synthesis array"
-write_kill "killJobs_merge"   "$SLURMID_MERGE" "merge"
-write_kill "killJobs"         "$SLURM_JOB_ID $SLURMID_RMSY $SLURMID_MERGE" "all processRM stages"
+write_kill "killJobs_rmsynth_clean" "$SLURMID_RMSY" "RM synthesis + clean array (combined)"
+write_kill "killJobs_merge"         "$SLURMID_MERGE" "merge"
+write_kill "killJobs"               "$SLURM_JOB_ID $SLURMID_RMSY $SLURMID_MERGE" "all processRM stages"
 
 echo ""
 echo "===================================="
 echo "  Pipeline submitted successfully!"
 echo "===================================="
-echo "Check status with:     ./fullSummary"
-echo "Cancel everything:     ./killJobs"
-echo "Cancel RM synthesis:   ./killJobs_rmsynth"
-echo "Cancel merge:          ./killJobs_merge"
+echo "Check status with:          ./fullSummary"
+echo "Cancel everything:          ./killJobs"
+echo "Cancel synth+clean array:   ./killJobs_rmsynth_clean"
+echo "Cancel merge:               ./killJobs_merge"
 """
 
     # Templated values not safe to drop straight into f-string above:
@@ -716,10 +716,10 @@ echo "Check status with:        ./fullSummary"
 echo "Tail orchestrator:        tail -f logs/orchestrate-${{JOBID}}.out"
 echo ""
 echo "Cancel scripts (written now / by the orchestrator once it runs):"
-echo "  ./killJobs_orchestrator   - cancel just this master job"
-echo "  ./killJobs_rmsynth        - cancel the RM synthesis array"
-echo "  ./killJobs_merge          - cancel the merge stage"
-echo "  ./killJobs                - cancel every processRM job here"
+echo "  ./killJobs_orchestrator    - cancel just this master job"
+echo "  ./killJobs_rmsynth_clean   - cancel the RM synthesis + clean array (they share a job)"
+echo "  ./killJobs_merge           - cancel the merge stage"
+echo "  ./killJobs                 - cancel every processRM job here"
 """
 
     with open(submit_path, 'w') as f:
