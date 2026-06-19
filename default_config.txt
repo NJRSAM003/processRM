@@ -27,7 +27,7 @@ parallel = 100                    # Total SLURM array size (chunks)
 chunks = 100                      # Number of chunks to process (<= parallel)
 resume_safe = True                # Skip stages with existing output on re-run
 
-# See rmsynth3d --help
+# Full help:  singularity exec ~/processRM/container/rm-env.sif rmsynth3d --help
 [rmsynth]
 phimax = 1000                     # -l PHIMAX_RADM2: max Faraday depth (rad/m^2)
 dphi = ''                         # -d DPHI_RADM2: Faraday channel width in rad/m^2; if empty, calculated as FWHM / nsamples
@@ -37,7 +37,7 @@ fit_gaussian_rmsf = True          # -t: Fit Gaussian to RMSF -> writes RMSF_FWHM
 skip_rmsf = False                 # -R: DO NOT enable - rmclean3d needs the RMSF cube to run
 super_resolution = False          # -r: Rudnick & Cotton mode (sharper phi, bigger cubes, slower)
 
-# See rmclean3d --help
+# Full help:  singularity exec ~/processRM/container/rm-env.sif rmclean3d --help
 [rmclean]
 threshold = 0.0000010             # -c CUTOFF: positive = Jy/beam/RMSF, negative = N-sigma (e.g. -5 for 5-sigma)
 iterations = 5000                 # -n MAXITER: max iterations per pixel (raise to 100000 for science-grade deep clean)
@@ -46,7 +46,7 @@ window = 0                        # -w WINDOW: deeper masked-clean threshold in 
 ncores = 1                        # --ncores: multiprocessing per task (also bump slurm.cpus_per_task)
 internal_chunk = ''               # --chunk: pixels per multiprocessing batch (only if ncores > 1)
 
-# See processRM --help
+# Full help:  processRM --help
 [slurm]
 nodes = 1
 ntasks_per_node = 1
