@@ -238,7 +238,7 @@ def create_all_cubes(inputcube, slurmArrayTaskId):
                 print(sbatchResultStderr)
 
 
-def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa_container=''):
+def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa_container='', job_name_suffix=''):
     def get_part_number(x):
         return int(x.split("part_")[1].split("_")[0])
     listing_all_parts = sorted(glob("processing/*fits"), key = get_part_number)
@@ -258,9 +258,9 @@ def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=100GB
-#SBATCH --job-name=merge_images
-#SBATCH --output=logs/merge_images-%A-%a.out
-#SBATCH --error=logs/merge_images-%A-%a.err
+#SBATCH --job-name=merge{job_name_suffix}
+#SBATCH --output=logs/merge{job_name_suffix}-%A-%a.out
+#SBATCH --error=logs/merge{job_name_suffix}-%A-%a.err
 #SBATCH --partition=Main
 #SBATCH --time=20:00:00
 #SBATCH --account={account}
@@ -334,6 +334,9 @@ Examples:
     parser.add_argument('--casaContainer',
                         default='/idia/software/containers/casa-6.4.4-modular.simg',
                         help='Path to CASA Singularity container')
+    parser.add_argument('--jobNameSuffix', default='',
+                        help='Optional suffix appended to the SLURM job name and log filenames '
+                             '(used by the per-region orchestrator, e.g. "_r1", "_r2").')
 
     args = parser.parse_args()
 
@@ -345,7 +348,8 @@ Examples:
         time.sleep(1)
         write_sbatch_file(args.inputcube, account=args.account,
                           rm_container=args.rmContainer,
-                          casa_container=args.casaContainer)
+                          casa_container=args.casaContainer,
+                          job_name_suffix=args.jobNameSuffix)
         submit_slurm_job()
     if args.slurmArrayTaskId:
         create_all_cubes(args.inputcube, slurmArrayTaskId=args.slurmArrayTaskId)

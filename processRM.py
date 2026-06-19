@@ -40,6 +40,8 @@ from datetime import datetime
 from time import gmtime
 
 import config_parser
+import cube_validator
+import region_parser
 
 
 def update_config_inplace(config_path, updates):
@@ -232,6 +234,10 @@ Examples:
                              'land here.')
     parser.add_argument('-f', '--freqlist',
                         help='Path to frequency list (.txt). Required when -F is used.')
+    parser.add_argument('-r', '--region-file', dest='region_file', default=None,
+                        help='Optional CARTA region file (.crtf or .ds9, pixel or world). '
+                             'Boxed regions only. Each box becomes an independent processing '
+                             'branch. When set, the config [data] crop/pointing values are ignored.')
     parser.add_argument('-C', '--config',
                         help='Optional name for the config built from -F '
                              '(default: myconfig.txt).')
@@ -400,6 +406,72 @@ def build_config_from_args(args, workdir):
 
     freqlist = os.path.abspath(args.freqlist)
 
+    # ---- Cube structure + freqlist validation (BUILD-time) ----
+    # Validates on the user's source FITS file. On the ilifu login node, astropy
+    # may not be on PATH (it's in the rm-env container); in that case we WARN and
+    # skip - the same validation runs again at RUN time after we've materialized
+    # the workdir, by which point the container is available.
+    primary_cube = fits_full or fits_q
+    cube_info = None
+    try:
+        cube_info = cube_validator.validate_freqlist_against_cube(primary_cube, freqlist)
+    except cube_validator.CubeStructureError as e:
+        msg = str(e)
+        if 'astropy is required' in msg:
+            logger.warning("  -> skipping BUILD-time cube validation: astropy not available "
+                           "on the login node. The same check runs at RUN time inside the "
+                           "container, so any structural problems will still be caught.")
+        else:
+            logger.error(msg)
+            sys.exit(1)
+    if cube_info:
+        logger.info(
+            f"cube structure OK: NAXIS={cube_info['naxis']}, "
+            f"FREQ on axis {cube_info['freq_axis']} ({cube_info['freq_nchans']} chans), "
+            f"STOKES on axis {cube_info['stokes_axis']}, freqlist lines={cube_info['freqlist_lines']}"
+        )
+        if cube_info['needs_transpose']:
+            logger.warning(
+                "  -> axes are (RA, DEC, STOKES, FREQ). RUN mode will auto-transpose "
+                "the (symlinked) cube to (RA, DEC, FREQ, STOKES) before chunking. "
+                "The original file on /idia/ or /users/ is NOT modified."
+            )
+
+    # ---- Region file: parse + preview if provided ----
+    # Same soft-degrade rule as cube validation: if astropy isn't on the login
+    # node, we skip the preview for world-coord region files and let RUN mode
+    # do the parsing inside the container. Pixel-coord region files don't need
+    # astropy and are always previewed.
+    region_file_abs = ''
+    if args.region_file:
+        region_file_abs = os.path.abspath(args.region_file)
+        if not os.path.exists(region_file_abs):
+            logger.error(f"Region file not found: {region_file_abs}")
+            sys.exit(1)
+        validate_ilifu_path(region_file_abs, label="region_file")
+        wcs_header = None
+        try:
+            from astropy.io import fits as _fits
+            wcs_header = _fits.getheader(primary_cube)
+        except Exception:
+            pass
+        try:
+            regions = region_parser.parse_region_file(region_file_abs, wcs_header)
+            logger.info(f"parsed {len(regions)} region(s) from {os.path.basename(region_file_abs)}:")
+            for line in region_parser.describe_regions(regions):
+                logger.info(f"  -> {line}")
+        except region_parser.RegionParseError as e:
+            if 'no cube WCS was supplied' in str(e):
+                logger.warning("  -> skipping BUILD-time region preview: astropy not "
+                               "available on the login node for world->pixel conversion. "
+                               "RUN mode will parse inside the container.")
+            else:
+                logger.error(f"Region file '{region_file_abs}': {e}")
+                sys.exit(1)
+        logger.warning(
+            "  -> region_file overrides [data] crop and pointing in the config."
+        )
+
     # Copy default config to workdir under user-chosen name (or 'myconfig.txt')
     config_name = args.config if args.config else 'myconfig.txt'
     if not config_name.endswith('.txt'):
@@ -420,6 +492,7 @@ def build_config_from_args(args, workdir):
         ('data', 'fits_stokesQ'):  f"'{fits_q}'",
         ('data', 'fits_stokesU'):  f"'{fits_u}'",
         ('data', 'freqlist'):      f"'{freqlist}'",
+        ('data', 'region_file'):   f"'{region_file_abs}'",
     }
 
     if args.chunks:
@@ -486,7 +559,277 @@ def _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals):
         )
 
 
-def generate_submit_script(workdir, config_path):
+_SINGLE_CUBE_BODY = r"""
+# ---- SINGLE-CUBE FLOW (no region file in config) ----
+
+# Stage 1: Stokes Q/U extraction (only if full IQUV cube was supplied)
+if [ -n "$FITS_FULL" ]; then
+    echo "[Stage 1] Extracting Stokes Q/U from full cube..."
+    singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
+    BASENAME=$(basename "$FITS_FULL" .fits)
+    FITS_Q="${BASENAME}.stokesQ.fits"
+    FITS_U="${BASENAME}.stokesU.fits"
+    echo "  -> Created: $FITS_Q"
+    echo "  -> Created: $FITS_U"
+else
+    echo "[Stage 1] Skipping extraction (Q and U already provided)"
+fi
+
+# Stage 2: Generate the RM synthesis array sbatch
+echo ""
+echo "[Stage 2] Generating run_parallel_rmsy.sbatch..."
+singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \
+    --inputFitsStokesQ "$FITS_Q" \
+    --inputFitsStokesU "$FITS_U" \
+    --freqList "$FREQLIST" \
+    --rmsyCleanThrethold "$THRESHOLD" \
+    --rmsyCleanIterations "$ITERATIONS" \
+    --rmsyCleanWindow "$WINDOW" \
+    --rmsyCleanGain "$GAIN" \
+    --account "$ACCOUNT" \
+    --casaContainer "$CASA_CONTAINER" \
+    --rmContainer "$RM_CONTAINER" \
+    --createSbatch
+
+# Stage 3: Submit the RM synthesis array job
+echo ""
+echo "[Stage 3] Submitting RM synthesis array job..."
+SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | awk '{print $4}')
+echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY"
+
+# Stage 4: Write a merge-prep SLURM job that depends on Stage 3 finishing.
+echo ""
+echo "[Stage 4] Writing merge-prep sbatch (will run after $SLURMID_RMSY)..."
+INPUT_CUBE="${FITS_FULL:-$FITS_Q}"
+cat > merge_prep.sbatch <<MPEOF
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4GB
+#SBATCH --job-name=merge_prep
+#SBATCH --output=logs/merge_prep-%j.out
+#SBATCH --error=logs/merge_prep-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=00:30:00
+#SBATCH --account=$ACCOUNT
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+cd "$WORKDIR"
+
+echo "[merge_prep] Generating merge_image_parts.sbatch from populated processing/..."
+singularity --quiet exec "$RM_CONTAINER" python3 -c "
+import sys
+sys.path.insert(0, '.')
+import merge_image_parts as m
+m.write_sbatch_file('$INPUT_CUBE',
+                    account='$ACCOUNT',
+                    rm_container='$RM_CONTAINER',
+                    casa_container='$CASA_CONTAINER')
+"
+
+if [ -f merge_image_parts.sbatch ]; then
+    SLURMID_MERGE=\$(sbatch merge_image_parts.sbatch | awk '{print \$4}')
+    echo "[merge_prep] Submitted merge array: \$SLURMID_MERGE"
+    cat > killJobs_merge <<EOF2
+#!/bin/bash
+echo "Cancelling \$SLURMID_MERGE (merge array)"
+scancel \$SLURMID_MERGE
+EOF2
+    chmod +x killJobs_merge
+else
+    echo "[merge_prep] WARNING: merge_image_parts.sbatch was not written."
+fi
+MPEOF
+SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_prep.sbatch | awk '{print $4}')
+echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
+SLURMID_MERGE="$SLURMID_MERGEPREP"
+
+write_kill () {
+    local script="$1"; local ids="$2"; local label="$3"
+    cat > "$script" <<EOF
+#!/bin/bash
+set -e
+IDS="$ids"
+[ -z "\$IDS" ] && { echo "No jobs to cancel for: ${label}"; exit 0; }
+echo "Cancelling \$IDS (${label})"
+scancel \$IDS
+EOF
+    chmod +x "$script"
+}
+write_kill "killJobs_rmsynth_clean" "$SLURMID_RMSY" "RM synthesis + clean array"
+write_kill "killJobs_merge"         "$SLURMID_MERGE" "merge"
+write_kill "killJobs"               "$SLURM_JOB_ID $SLURMID_RMSY $SLURMID_MERGE" "all processRM stages"
+
+echo ""
+echo "===================================="
+echo "  Pipeline submitted successfully!"
+echo "===================================="
+"""
+
+
+def _multi_region_body(regions):
+    """Render the orchestrator body that loops over each region.
+
+    Each region gets its own ``region<N>/`` subdir under WORKDIR. Inside it
+    we symlink the cube, freqlist, and pipeline scripts, then run the same
+    extract -> sbatch-gen -> sub-submit sequence as the single-cube flow,
+    cd-ed into the region dir so all outputs land per-region.
+
+    Region geometry is baked in as parallel bash arrays so the orchestrator
+    has no runtime parse dependency on the region file.
+    """
+    ids = ' '.join(str(r['index']) for r in regions)
+    # crop format that create_subimage.py / get_cropped_numpy_plane expect: [width, height]
+    crops = ' '.join(f'"[{r["width_px"]},{r["height_px"]}]"' for r in regions)
+    # pointing format: [x_center, y_center]
+    points = ' '.join(
+        f'"[{int(round(r["x_center_px"]))},{int(round(r["y_center_px"]))}]"'
+        for r in regions
+    )
+    return r"""
+# ---- MULTI-REGION FLOW (region_file in config -> one branch per box) ----
+
+REGION_IDS=(""" + ids + r""")
+REGION_CROPS=(""" + crops + r""")
+REGION_POINTS=(""" + points + r""")
+
+ALL_RMSY_IDS=""
+ALL_MERGEPREP_IDS=""
+
+for i in "${!REGION_IDS[@]}"; do
+    RID=${REGION_IDS[$i]}
+    CROP=${REGION_CROPS[$i]}
+    POINT=${REGION_POINTS[$i]}
+    SUFFIX="_r${RID}"
+    REGION_DIR="region${RID}"
+
+    echo ""
+    echo "=========================================="
+    echo "  Region ${RID}: crop=${CROP} pointing=${POINT}"
+    echo "=========================================="
+    mkdir -p "$REGION_DIR"
+    cd "$REGION_DIR"
+    mkdir -p logs errors processing
+
+    # Symlink everything the per-region scripts need (cube, freqlist, support code)
+    for f in "$FITS_FULL" "$FITS_Q" "$FITS_U" "$FREQLIST"; do
+        [ -n "$f" ] && [ -f "../$f" ] && ln -sf "../$f" "$(basename "$f")"
+    done
+    for s in create_subimage.py create_subimage_rmsy_cube.py run_parallel_rmsy.py \
+             merge_image_parts.py config_parser.py region_parser.py cube_validator.py fullSummary; do
+        [ -f "../$s" ] && ln -sf "../$s" "$s"
+    done
+
+    # Stage 1 (per region): extract cropped Stokes Q/U
+    if [ -n "$FITS_FULL" ]; then
+        echo "[r${RID} Stage 1] Extracting Stokes Q/U with crop=${CROP} pointing=${POINT}"
+        singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py \
+            --inputcube "$FITS_FULL" --crop "${CROP}" --pointing "${POINT}"
+        R_BASE=$(basename "$FITS_FULL" .fits)
+        R_FITS_Q="${R_BASE}.stokesQ.fits"
+        R_FITS_U="${R_BASE}.stokesU.fits"
+    else
+        echo "[r${RID} Stage 1] Pre-split Q/U provided; region cropping not applied"
+        R_FITS_Q="$FITS_Q"
+        R_FITS_U="$FITS_U"
+    fi
+
+    # Stage 2 (per region): generate rmsy sbatch
+    echo "[r${RID} Stage 2] Generating run_parallel_rmsy.sbatch (region $RID)"
+    singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \
+        --inputFitsStokesQ "$R_FITS_Q" \
+        --inputFitsStokesU "$R_FITS_U" \
+        --freqList "$(basename "$FREQLIST")" \
+        --rmsyCleanThrethold "$THRESHOLD" \
+        --rmsyCleanIterations "$ITERATIONS" \
+        --rmsyCleanWindow "$WINDOW" \
+        --rmsyCleanGain "$GAIN" \
+        --account "$ACCOUNT" \
+        --casaContainer "$CASA_CONTAINER" \
+        --rmContainer "$RM_CONTAINER" \
+        --jobNameSuffix "$SUFFIX" \
+        --createSbatch
+
+    # Stage 3 (per region): submit rmsy array
+    SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | awk '{print $4}')
+    echo "[r${RID} Stage 3] RM synthesis array: SLURM job $SLURMID_RMSY"
+    ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
+
+    # Stage 4 (per region): merge-prep dependent on this region's rmsy completing
+    INPUT_CUBE="${FITS_FULL:-$R_FITS_Q}"
+    cat > merge_prep.sbatch <<MPEOF
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4GB
+#SBATCH --job-name=merge_prep${SUFFIX}
+#SBATCH --output=logs/merge_prep-%j.out
+#SBATCH --error=logs/merge_prep-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=00:30:00
+#SBATCH --account=$ACCOUNT
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+cd "$WORKDIR/$REGION_DIR"
+
+echo "[r${RID} merge_prep] Generating merge_image_parts.sbatch..."
+singularity --quiet exec "$RM_CONTAINER" python3 -c "
+import sys
+sys.path.insert(0, '.')
+import merge_image_parts as m
+m.write_sbatch_file('$INPUT_CUBE',
+                    account='$ACCOUNT',
+                    rm_container='$RM_CONTAINER',
+                    casa_container='$CASA_CONTAINER',
+                    job_name_suffix='${SUFFIX}')
+"
+
+if [ -f merge_image_parts.sbatch ]; then
+    SLURMID_MERGE=\$(sbatch merge_image_parts.sbatch | awk '{print \$4}')
+    echo "[r${RID} merge_prep] Submitted merge array: \$SLURMID_MERGE"
+else
+    echo "[r${RID} merge_prep] WARNING: merge_image_parts.sbatch was not written."
+fi
+MPEOF
+    SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_prep.sbatch | awk '{print $4}')
+    echo "[r${RID} Stage 4] Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
+    ALL_MERGEPREP_IDS="$ALL_MERGEPREP_IDS $SLURMID_MERGEPREP"
+
+    cd "$WORKDIR"
+done
+
+# Per-stage kill scripts (top-level, cover every region)
+write_kill () {
+    local script="$1"; local ids="$2"; local label="$3"
+    cat > "$script" <<EOF
+#!/bin/bash
+set -e
+IDS="$ids"
+[ -z "\$IDS" ] && { echo "No jobs to cancel for: ${label}"; exit 0; }
+echo "Cancelling \$IDS (${label})"
+scancel \$IDS
+EOF
+    chmod +x "$script"
+}
+write_kill "killJobs_rmsynth_clean" "$ALL_RMSY_IDS" "RM synthesis + clean arrays (all regions)"
+write_kill "killJobs_merge"         "$ALL_MERGEPREP_IDS" "merge prep jobs (will cascade to merge arrays)"
+write_kill "killJobs"               "$SLURM_JOB_ID $ALL_RMSY_IDS $ALL_MERGEPREP_IDS" "all processRM stages (all regions)"
+
+echo ""
+echo "===================================="
+echo "  Multi-region pipeline submitted!"
+echo "===================================="
+echo "Regions:           ${#REGION_IDS[@]}"
+echo "RM synthesis IDs:  $ALL_RMSY_IDS"
+echo "Merge prep IDs:    $ALL_MERGEPREP_IDS"
+"""
+
+
+def generate_submit_script(workdir, config_path, regions=None):
     """Generate the orchestrator sbatch and the thin submit_pipeline.sh wrapper.
 
     Mirrors processMeerKAT's design: submit_pipeline.sh only calls 'sbatch'
@@ -495,7 +838,15 @@ def generate_submit_script(workdir, config_path):
     generation + sub-submission) lives inside processRM_orchestrate.sbatch,
     which SLURM dispatches to a compute node where 'singularity exec' is
     permitted.
+
+    If ``regions`` is a non-empty list of dicts (from region_parser), the
+    orchestrator instead loops over each region: creates ``region<N>/``,
+    extracts a cropped Q/U for that region, sub-submits its own RM-synth
+    array, and chains the per-region merge_prep after it. Each region is a
+    self-contained mini-workdir under the top-level workdir, so per-region
+    outputs and logs never collide.
     """
+    regions = regions or []
     orch_path = os.path.join(workdir, 'processRM_orchestrate.sbatch')
     submit_path = os.path.join(workdir, MASTER_SCRIPT)
 
@@ -555,129 +906,7 @@ echo "RM container:   $RM_CONTAINER"
 echo "CASA container: $CASA_CONTAINER"
 echo ""
 
-# Stage 1: Stokes Q/U extraction (only if full IQUV cube was supplied)
-if [ -n "$FITS_FULL" ]; then
-    echo "[Stage 1] Extracting Stokes Q/U from full cube..."
-    singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
-    BASENAME=$(basename "$FITS_FULL" .fits)
-    FITS_Q="${{BASENAME}}.stokesQ.fits"
-    FITS_U="${{BASENAME}}.stokesU.fits"
-    echo "  -> Created: $FITS_Q"
-    echo "  -> Created: $FITS_U"
-else
-    echo "[Stage 1] Skipping extraction (Q and U already provided)"
-fi
-
-# Stage 2: Generate the RM synthesis array sbatch
-echo ""
-echo "[Stage 2] Generating run_parallel_rmsy.sbatch..."
-singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parallel "$CHUNKS" \
-    --inputFitsStokesQ "$FITS_Q" \
-    --inputFitsStokesU "$FITS_U" \
-    --freqList "$FREQLIST" \
-    --rmsyCleanThrethold "$THRESHOLD" \
-    --rmsyCleanIterations "$ITERATIONS" \
-    --rmsyCleanWindow "$WINDOW" \
-    --rmsyCleanGain "$GAIN" \
-    --account "$ACCOUNT" \
-    --casaContainer "$CASA_CONTAINER" \
-    --rmContainer "$RM_CONTAINER" \
-    --createSbatch
-
-# Stage 3: Submit the RM synthesis array job (sub-submit from inside SLURM)
-echo ""
-echo "[Stage 3] Submitting RM synthesis array job..."
-SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | awk '{{print $4}}')
-echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY"
-
-# Stage 4: Write a "merge prep" SLURM job that depends on Stage 3 finishing.
-# We CANNOT generate merge_image_parts.sbatch right now because processing/
-# is still empty - merge_image_parts.py's write_sbatch_file would render
-# '--array=1-0' which sbatch rejects as Invalid job array specification.
-# The prep job runs AFTER the RM-synth array completes, when processing/ is
-# populated, generates the proper merge sbatch, and sub-submits it.
-echo ""
-echo "[Stage 4] Writing merge-prep sbatch (will run after $SLURMID_RMSY)..."
-INPUT_CUBE="${{FITS_FULL:-$FITS_Q}}"
-cat > merge_prep.sbatch <<MPEOF
-#!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=4GB
-#SBATCH --job-name=merge_prep
-#SBATCH --output=logs/merge_prep-%j.out
-#SBATCH --error=logs/merge_prep-%j.err
-#SBATCH --partition=Main
-#SBATCH --time=00:30:00
-#SBATCH --account=$ACCOUNT
-
-set -e
-export PYTHONDONTWRITEBYTECODE=1
-cd "$WORKDIR"
-
-echo "[merge_prep] Generating merge_image_parts.sbatch from populated processing/..."
-singularity --quiet exec "$RM_CONTAINER" python3 -c "
-import sys
-sys.path.insert(0, '.')
-import merge_image_parts as m
-m.write_sbatch_file('$INPUT_CUBE',
-                    account='$ACCOUNT',
-                    rm_container='$RM_CONTAINER',
-                    casa_container='$CASA_CONTAINER')
-"
-
-if [ -f merge_image_parts.sbatch ]; then
-    SLURMID_MERGE=\$(sbatch merge_image_parts.sbatch | awk '{{print \$4}}')
-    echo "[merge_prep] Submitted merge array: \$SLURMID_MERGE"
-    # Refresh per-stage kill scripts now that we finally know the merge ID
-    cat > killJobs_merge <<EOF2
-#!/bin/bash
-echo "Cancelling \$SLURMID_MERGE (merge array)"
-scancel \$SLURMID_MERGE
-EOF2
-    chmod +x killJobs_merge
-else
-    echo "[merge_prep] WARNING: merge_image_parts.sbatch was not written."
-fi
-MPEOF
-SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_prep.sbatch | awk '{{print $4}}')
-echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
-SLURMID_MERGE="$SLURMID_MERGEPREP"  # used for the killJobs scripts below until prep runs
-
-# Generate per-stage killJobs helpers (now that we know all the IDs)
-write_kill () {{
-    local script="$1"
-    local ids="$2"
-    local label="$3"
-    cat > "$script" <<EOF
-#!/bin/bash
-# Kill the ${{label}} job(s).
-# Generated by processRM at $(date -Iseconds)
-set -e
-IDS="$ids"
-if [ -z "\$IDS" ]; then
-    echo "No jobs to cancel for: ${{label}}"
-    exit 0
-fi
-echo "Cancelling \$IDS (${{label}})"
-scancel \$IDS
-EOF
-    chmod +x "$script"
-}}
-
-write_kill "killJobs_rmsynth_clean" "$SLURMID_RMSY" "RM synthesis + clean array (combined)"
-write_kill "killJobs_merge"         "$SLURMID_MERGE" "merge"
-write_kill "killJobs"               "$SLURM_JOB_ID $SLURMID_RMSY $SLURMID_MERGE" "all processRM stages"
-
-echo ""
-echo "===================================="
-echo "  Pipeline submitted successfully!"
-echo "===================================="
-echo "Check status with:          ./fullSummary"
-echo "Cancel everything:          ./killJobs"
-echo "Cancel synth+clean array:   ./killJobs_rmsynth_clean"
-echo "Cancel merge:               ./killJobs_merge"
+__REGION_BLOCK__
 """
 
     # Templated values not safe to drop straight into f-string above:
@@ -686,9 +915,11 @@ echo "Cancel merge:               ./killJobs_merge"
     taskvals, _ = config_parser.parse_config(config_path)
     account_val = (taskvals.get('slurm', {}).get('account') or 'b03-idia-ag').strip("'\"")
     rm_container_val = (taskvals.get('slurm', {}).get('rm_container') or '').strip("'\"")
+    region_block = _multi_region_body(regions) if regions else _SINGLE_CUBE_BODY
     orchestrator = (orchestrator
                     .replace('__ACCOUNT__', account_val)
-                    .replace('__RM_CONTAINER__', rm_container_val))
+                    .replace('__RM_CONTAINER__', rm_container_val)
+                    .replace('__REGION_BLOCK__', region_block))
 
     with open(orch_path, 'w') as f:
         f.write(orchestrator)
@@ -859,8 +1090,14 @@ def materialize_workdir_from_config(config_path, workdir):
     data = taskvals.get('data', {})
 
     # ---- Pre-flight: validate every [data] path BEFORE touching anything ----
+    # region_file is the only [data] entry that's allowed to be empty (full-cube
+    # processing), so it's handled alongside the required cube/freqlist paths
+    # only when set.
     missing = []
-    for key in ('fits_full', 'fits_stokesQ', 'fits_stokesU', 'freqlist'):
+    data_keys = ['fits_full', 'fits_stokesQ', 'fits_stokesU', 'freqlist']
+    if (data.get('region_file') or '').strip():
+        data_keys.append('region_file')
+    for key in data_keys:
         path = (data.get(key) or '').strip()
         if not path:
             continue
@@ -893,7 +1130,7 @@ def materialize_workdir_from_config(config_path, workdir):
 
     # ---- All paths good — materialise the workdir ----
     updates = {}
-    for key in ('fits_full', 'fits_stokesQ', 'fits_stokesU', 'freqlist'):
+    for key in data_keys:
         path = (data.get(key) or '').strip()
         if not path:
             continue
@@ -906,6 +1143,40 @@ def materialize_workdir_from_config(config_path, workdir):
     if updates:
         update_config_inplace(config_path, updates)
 
+    # ---- Re-run cube/freqlist validation against the now-symlinked files ----
+    # The user may have edited the config after BUILD, so verify the live state.
+    # Also auto-transpose the symlinked cube if axes are (RA,DEC,STOKES,FREQ).
+    data_now, _ = config_parser.parse_config(config_path)
+    data_now = data_now.get('data', {})
+    primary_basename = (data_now.get('fits_full') or data_now.get('fits_stokesQ') or '').strip()
+    freqlist_basename = (data_now.get('freqlist') or '').strip()
+    if primary_basename and freqlist_basename:
+        primary_path = os.path.join(workdir, primary_basename)
+        freqlist_path = os.path.join(workdir, freqlist_basename)
+        try:
+            info = cube_validator.validate_freqlist_against_cube(primary_path, freqlist_path)
+        except cube_validator.CubeStructureError as e:
+            logger.error(str(e))
+            cleanup_run_artifacts(workdir, keep_config=config_path)
+            sys.exit(1)
+        if info['needs_transpose']:
+            logger.warning(
+                f"  -> auto-transposing axes (RA,DEC,STOKES,FREQ) -> (RA,DEC,FREQ,STOKES) "
+                f"on a local copy of: {primary_basename}"
+            )
+            # Replace the symlink with a real copy first so the rewrite does NOT
+            # propagate through to the user's original cube on /idia/ or /users/.
+            try:
+                if os.path.islink(primary_path):
+                    source = os.path.realpath(primary_path)
+                    os.unlink(primary_path)
+                    shutil.copy2(source, primary_path)
+                cube_validator.transpose_cube_in_place(primary_path, info)
+            except Exception as e:
+                logger.error(f"Auto-transpose failed: {e}")
+                cleanup_run_artifacts(workdir, keep_config=config_path)
+                sys.exit(1)
+
     # Subdirectories — only now that we know we will actually run
     for sub in ['logs', 'processing', 'errors']:
         os.makedirs(os.path.join(workdir, sub), exist_ok=True)
@@ -913,9 +1184,34 @@ def materialize_workdir_from_config(config_path, workdir):
         os.makedirs(os.path.join(workdir, 'errors', sub), exist_ok=True)
 
     copy_pipeline_scripts(workdir)
-    shutil.copy2(os.path.join(SCRIPT_DIR, 'config_parser.py'),
-                 os.path.join(workdir, 'config_parser.py'))
-    return generate_submit_script(workdir, config_path)
+    for support in ('config_parser.py', 'region_parser.py', 'cube_validator.py'):
+        shutil.copy2(os.path.join(SCRIPT_DIR, support),
+                     os.path.join(workdir, support))
+
+    # ---- Parse the region file (now that the cube and region file both
+    # live in workdir) so the orchestrator script can bake in one entry
+    # per region. If region_file is empty, regions=[] -> single-cube flow.
+    regions = []
+    region_file_basename = (data_now.get('region_file') or '').strip()
+    if region_file_basename and primary_basename:
+        try:
+            from astropy.io import fits as _fits
+            wcs_header = _fits.getheader(os.path.join(workdir, primary_basename))
+        except Exception:
+            wcs_header = None
+        try:
+            regions = region_parser.parse_region_file(
+                os.path.join(workdir, region_file_basename), wcs_header
+            )
+        except region_parser.RegionParseError as e:
+            logger.error(f"Region file '{region_file_basename}': {e}")
+            cleanup_run_artifacts(workdir, keep_config=config_path)
+            sys.exit(1)
+        logger.info(f"will run {len(regions)} region(s):")
+        for line in region_parser.describe_regions(regions):
+            logger.info(f"  -> {line}")
+
+    return generate_submit_script(workdir, config_path, regions=regions)
 
 
 def main():

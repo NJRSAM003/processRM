@@ -18,8 +18,9 @@ fits_full = ''                    # Full Stokes IQUV cube (use this OR fits_stok
 fits_stokesQ = ''
 fits_stokesU = ''
 freqlist = ''                     # ASCII frequency list (Hz), one per line
-crop = ''                         # Optional spatial crop "[width, height]" in px; requires 'pointing' or has no effect
-pointing = ''                     # Optional crop centre "[x, y]" in px; requires 'crop' or has no effect
+region_file = ''                  # Optional CARTA region file (.crtf or .ds9, pixel or world). Boxed regions only; each box -> its own processing branch. If set, the 'crop' and 'pointing' values below are IGNORED.
+crop = ''                         # Optional spatial crop "[width, height]" in px; requires 'pointing' or has no effect. IGNORED if region_file is set.
+pointing = ''                     # Optional crop centre "[x, y]" in px; requires 'crop' or has no effect. IGNORED if region_file is set.
 
 [chunking]
 parallel = 100                    # Total SLURM array size (chunks)

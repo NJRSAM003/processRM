@@ -33,6 +33,18 @@ def write_cube_frequency_list(filepathCube, freqPower=1e-9):
     print(f"Writing frequency list to file: {filepathCube}") 
     #return freq_list
 
+def _output_basename(inputName, mode):
+    """Strip the input directory and append .stokes{Q,U,I}.fits in CWD.
+
+    Today create_subimage.py is invoked per-region from inside each region's
+    subdirectory, so the input cube path is typically '../cube.fits'. We want
+    outputs to land in the region's directory, not the parent, so output names
+    are computed from the BASENAME of the input.
+    """
+    base = os.path.basename(inputName)
+    return base.replace(".fits", f".{mode}.fits")
+
+
 def make_empty_image(inputName, crop, pointing, mode="normal"):
     """
     Generate an empty dummy fits data cube.
@@ -41,13 +53,16 @@ def make_empty_image(inputName, crop, pointing, mode="normal"):
 
     """
     cubeNameInput = inputName
-        
+
     hduCubeInput = fits.open(cubeNameInput, memmap=True, mode="update")
     zdim, ydim, xdim = np.squeeze(hduCubeInput[0].data).shape[-3:]
 
-    #zdim = 1
-    #zdim = 197
-    zdim = 9
+    # [CHANGE 2026-06-19]: derive zdim from NAXIS3 (frequency channel count)
+    # Reason: the old code hardcoded zdim = 9 which silently truncated cubes.
+    # processRM now validates that the freqlist length matches NAXIS3 before
+    # this script runs, so taking the cube's own value is safe and correct.
+    header = hduCubeInput[0].header
+    zdim = int(header.get('NAXIS3', zdim))
 
     wdim = 1
 
@@ -84,12 +99,7 @@ def make_empty_image(inputName, crop, pointing, mode="normal"):
     #del header["CRPIX4"]
     #del header["CUNIT4"]
 
-    if mode == "stokesQ":
-        cubeNameOutput = inputName.replace(".fits", ".stokesQ.fits")
-    elif mode == "stokesU":
-        cubeNameOutput = inputName.replace(".fits", ".stokesU.fits")
-    elif mode == "stokesI":
-        cubeNameOutput = inputName.replace(".fits", ".stokesI.fits")
+    cubeNameOutput = _output_basename(inputName, mode)
 
     header.tofile(cubeNameOutput, overwrite=True)
 
@@ -148,12 +158,7 @@ def fill_cube_with_images(inputName, crop, pointing, mode="normal"):
 
     """
     cubeNameInput = inputName
-    if mode == "stokesQ":
-        cubeNameOutput = inputName.replace(".fits", ".stokesQ.fits")
-    elif mode == "stokesU":
-        cubeNameOutput = inputName.replace(".fits", ".stokesU.fits")
-    elif mode == "stokesI":
-        cubeNameOutput = inputName.replace(".fits", ".stokesI.fits")
+    cubeNameOutput = _output_basename(inputName, mode)
 
     hudCubeInput = fits.open(cubeNameInput, memmap=True, ignore_missing_end=True, mode="update")
     dataCubeInput = hudCubeInput[0].data
@@ -161,14 +166,13 @@ def fill_cube_with_images(inputName, crop, pointing, mode="normal"):
     hudCubeOutput = fits.open(cubeNameOutput, memmap=True, ignore_missing_end=True, mode="update")
     dataCubeOutput = hudCubeOutput[0].data
 
-#    highestChannel = int(dataCubeInput.shape[1])
-    if mode == "stokesQ":
-        #dataCubeOutput[0, :, :, :] = np.nan_to_num(dataCubeInput[1, :, :, :])
-        dataCubeOutput[0, :, :, :] = get_cropped_numpy_plane(crop, pointing, dataCubeInput[1, :253, :, :])
-    elif mode == "stokesU":
-        dataCubeOutput[0, :, :, :] = get_cropped_numpy_plane(crop, pointing, dataCubeInput[2, :253, :, :])
-    elif mode == "stokesI":
-        dataCubeOutput[0, :, :, :] = get_cropped_numpy_plane(crop, pointing, dataCubeInput[0, :253, :, :])
+    # [CHANGE 2026-06-19]: take ALL freq channels (the old code's ':253' silently
+    # discarded everything above channel 253). The earlier processRM BUILD step
+    # verifies that NAXIS3 == len(freqlist), so we know the slicing is sound.
+    stokes_idx = {'stokesI': 0, 'stokesQ': 1, 'stokesU': 2}[mode]
+    dataCubeOutput[0, :, :, :] = get_cropped_numpy_plane(
+        crop, pointing, dataCubeInput[stokes_idx, :, :, :]
+    )
 #    dataCubeOutput[0, :, :] = dataCubeInput[1, 0, :, :]
 #    dataCubeOutput[0, :, :] = np.sqrt(dataCubeInput[1, 0, :, :]**2 + dataCubeInput[2, 0, :, :]**2)
 #    dataMedian = np.median(dataCubeOutput[:, :, :])
@@ -176,7 +180,6 @@ def fill_cube_with_images(inputName, crop, pointing, mode="normal"):
 #    dataCubeOutput[0, :, :] = dataCubeInput[1, 0, :, :]
 
     wdim, zdim, xdim, ydim = dataCubeInput.shape
-    zdim = 9
     if crop and pointing:
         addFitsHeaderDict = {
                 #"CRPIX3": 1, #lowestChanNo,

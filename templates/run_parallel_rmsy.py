@@ -111,9 +111,9 @@ def write_sbatch_file(args):
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=10GB
-#SBATCH --job-name=rmsy
-#SBATCH --output=logs/rmsy-%A-%a.out
-#SBATCH --error=logs/rmsy-%A-%a.err
+#SBATCH --job-name=rmsy{args.jobNameSuffix}
+#SBATCH --output=logs/rmsy{args.jobNameSuffix}-%A-%a.out
+#SBATCH --error=logs/rmsy{args.jobNameSuffix}-%A-%a.err
 #SBATCH --partition=Main
 #SBATCH --time=10:00:00
 #SBATCH --account={args.account}
@@ -279,6 +279,10 @@ Examples:
                         help='Path to rm-env Singularity container (for rmsynth3d/rmclean3d)')
     parser.add_argument('--createSbatch', action='store_true',
                         help='Write sbatch file with current parameters')
+    parser.add_argument('--jobNameSuffix', default='',
+                        help='Optional suffix appended to the SLURM job name and log filenames '
+                             '(used by the per-region orchestrator to distinguish regions, '
+                             'e.g. "_r1", "_r2"). Empty by default.')
     parser.add_argument('--start', action='store_true',
                         help='Submit the sbatch job to SLURM')
 
