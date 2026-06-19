@@ -10,8 +10,10 @@ A config-driven RM (Faraday Rotation Measure) synthesis pipeline for the **ilifu
 ## Features
 
 - **INI-style config file** (`[data]`, `[chunking]`, `[rmsynth]`, `[rmclean]`, `[slurm]`, `[merge]`)
-- **One-command pipeline submission** — `processRM -C myconfig.txt`
+- **Two-phase workflow** — `-F` builds a config you can review, `-R` runs it
 - **SLURM array parallelism** — chunks distributed across compute nodes
+- **CARTA region-file support** — drop in a `.crtf` or `.ds9` region (pixel or world); each box becomes an independent processing branch under `region<N>/`
+- **Cube structural validation** — refuses 3D cubes, checks that the freqlist line count matches the cube's frequency-axis length, and auto-transposes `(RA,DEC,STOKES,FREQ)` cubes back into the expected order (on a local copy, never the original)
 - **Resume safety** — re-running picks up where it left off after timeouts/failures
 - **Per-stage timing logs** — `logs/timings.csv` tracks avg time per chunk
 - **Live pipeline status** — `./fullSummary` shows progress bars, SLURM jobs, errors
@@ -26,6 +28,8 @@ A config-driven RM (Faraday Rotation Measure) synthesis pipeline for the **ilifu
 processRM/
 ├── processRM.py              # Main orchestrator (CLI entry point)
 ├── config_parser.py          # Config validation/parser
+├── region_parser.py          # CARTA region-file parser (CRTF/DS9, pixel/world)
+├── cube_validator.py         # NAXIS / axis-order / freqlist checks + auto-transpose
 ├── default_config.txt        # Annotated default config template
 ├── setup.sh                  # Installer — adds processRM to PATH
 ├── templates/                # Per-stage scripts (copied into workdir)
@@ -80,25 +84,32 @@ processRM will use `~/processRM/container/rm-env.sif` by default. You can leave 
 cd /idia/projects/<your-project>/<your-workdir>
 ```
 
-### Step 4 — Generate the pipeline config
+### Step 4 — BUILD: generate a config from your inputs
 
-Either pass a full Stokes cube **or** separated Q + U cubes, plus a frequency list:
+Either pass a full Stokes cube **or** separated Q + U cubes, plus a frequency list. Optionally pass a CARTA region file (`-r`) — each box becomes an independent processing branch.
 
 ```bash
-processRM -F mycube_IQUV.fits \
-          -f mycube.freqlist.txt \
-          --chunks 100
+# Whole cube
+processRM -F mycube_IQUV.fits -f mycube.freqlist.txt --chunks 100
+
+# One or more boxed regions (CRTF or DS9, pixel or world)
+processRM -F mycube_IQUV.fits -f mycube.freqlist.txt -r myregions.crtf --chunks 100
 ```
 
-This creates `myconfig.txt`, `submit_pipeline.sh`, and copies the per-stage scripts into the current directory. Open `myconfig.txt` and review the values before submitting.
+This step **only writes `myconfig.txt`** (and prints a preview of the chunk geometry and detected regions). It runs cube structural checks up front — 3D cubes, mismatched freqlist lengths, and unsupported region shapes will fail here before any SLURM job is created. Open `myconfig.txt` and review the values.
 
-### Step 5 — Submit the pipeline
+### Step 5 — RUN: materialise the workdir and generate `submit_pipeline.sh`
+
+```bash
+processRM -R myconfig.txt          # set up workdir; submit manually
+processRM -R myconfig.txt -s       # set up workdir AND submit immediately
+```
+
+RUN symlinks the inputs into the workdir, copies the per-stage scripts in, re-runs cube validation inside the container (auto-transposing `(RA,DEC,STOKES,FREQ)` cubes if needed), and writes `submit_pipeline.sh` plus `processRM_orchestrate.sbatch`. Without `-s`, submit later with:
 
 ```bash
 ./submit_pipeline.sh
 ```
-
-This validates the containers, generates the SLURM sbatch files, and submits the array jobs.
 
 ### Step 6 — Monitor progress
 
@@ -119,7 +130,7 @@ Add `--watch` for live updates every 10 seconds, or `--errors` for the full erro
 
 | Section | Purpose |
 |---|---|
-| `[data]` | Input FITS file(s) and frequency list |
+| `[data]` | Input FITS file(s), frequency list, and optional CARTA region file (overrides `crop`/`pointing` when set) |
 | `[chunking]` | How the cube is split for parallel processing |
 | `[rmsynth]` | Parameters for `rmsynth3d` (Faraday depth range, weighting, RMSF) |
 | `[rmclean]` | Parameters for `rmclean3d` (threshold, iterations, gain, parallelism) |
