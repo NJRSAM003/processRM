@@ -1,4 +1,0 @@
-#CRTFv0 CASA Region Text Format version 0
-centerbox [[02:51:12.26646, -031.06.15.4303], [934.9565arcsec, 801.3911arcsec]] coord=J2000, corr=[I], linewidth=2, linestyle=-, symsize=1, symthick=1, color=white, font=Helvetica, fontsize=10, fontstyle=bold, usetex=false
-centerbox [[02:50:27.29105, -029.16.09.1220], [901.5650arcsec, 834.7822arcsec]] coord=J2000, corr=[I], linewidth=2, linestyle=-, symsize=1, symthick=1, color=white, font=Helvetica, fontsize=10, fontstyle=bold, usetex=false
-centerbox [[02:44:33.79423, -030.31.45.9894], [901.5659arcsec, 734.6089arcsec]] coord=J2000, corr=[I], linewidth=2, linestyle=-, symsize=1, symthick=1, color=white, font=Helvetica, fontsize=10, fontstyle=bold, usetex=false

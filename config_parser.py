@@ -127,13 +127,12 @@ def validate_config(filename):
 
     # Validate [data] section
     fits_full = validate_args(taskvals, 'data', 'fits_full', str, default='')
-    fits_q = validate_args(taskvals, 'data', 'fits_stokesQ', str, default='')
-    fits_u = validate_args(taskvals, 'data', 'fits_stokesU', str, default='')
     freqlist = validate_args(taskvals, 'data', 'freqlist', str, default='')
 
-    if not fits_full and not (fits_q and fits_u):
+    if not fits_full:
         raise ValueError(
-            "Config error: provide either [data] fits_full OR both fits_stokesQ and fits_stokesU"
+            "Config error: [data] fits_full is required (path to a full Stokes IQUV "
+            "radio-continuum cube). Q/U-only inputs are no longer accepted."
         )
 
     if not freqlist:

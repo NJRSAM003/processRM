@@ -14,9 +14,8 @@
 Modeled after processMeerKAT.
 
 Usage:
-  BUILD a new config (you provide FITS file(s) + freq list):
+  BUILD a new config (you provide a full-Stokes IQUV cube + freq list):
     processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
-    processRM -F "mycube.stokesQ.fits mycube.stokesU.fits" -f freqs.txt
     processRM -F mycube_IQUV.fits -f freqs.txt -C run1.txt   # custom name
 
   RUN an existing config:
@@ -202,14 +201,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # BUILD a config from a full Stokes cube + freq list (default name: myconfig.txt)
+  # BUILD a config from a full Stokes IQUV cube + freq list (default name: myconfig.txt)
   processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
 
   # BUILD with a custom config name
   processRM -F mycube_IQUV.fits -f mycube.freqlist.txt -C run1.txt
-
-  # BUILD from separate Q and U cubes
-  processRM -F "mycube.stokesQ.fits mycube.stokesU.fits" -f freqs.txt
 
   # BUILD with a specific chunk count
   processRM -F mycube_IQUV.fits -f freqs.txt --chunks 50
@@ -226,12 +222,11 @@ Examples:
     )
 
     parser.add_argument('-F', '--fitsfile',
-                        help='BUILD mode: path to FITS cube(s). Single full-Stokes IQUV '
-                             'cube (e.g. mycube_IQUV.fits) OR two files in quotes '
-                             '(e.g. "mycube.stokesQ.fits mycube.stokesU.fits"). '
-                             'Relative or absolute paths are fine — processRM will '
-                             'symlink them into the current directory so all outputs '
-                             'land here.')
+                        help='BUILD mode: path to the full-Stokes IQUV radio-continuum cube '
+                             '(e.g. mycube_IQUV.fits). processRM extracts Stokes I, Q, and U '
+                             'internally; standalone Q/U cubes are not accepted. Relative or '
+                             'absolute paths are fine — processRM will symlink the file into '
+                             'the current directory so all outputs land here.')
     parser.add_argument('-f', '--freqlist',
                         help='Path to frequency list (.txt). Required when -F is used.')
     parser.add_argument('-r', '--region-file', dest='region_file', default=None,
@@ -377,32 +372,19 @@ def build_config_from_args(args, workdir):
 
     validate_ilifu_path(args.freqlist, label="freqlist")
 
-    # Parse FITS file(s) — could be one full cube or two split cubes
+    # -F must be a single full-Stokes IQUV cube. Q/U-only inputs are not accepted.
     fits_files = args.fitsfile.split()
-    fits_full = ''
-    fits_q = ''
-    fits_u = ''
-
-    if len(fits_files) == 1:
-        fits_full = os.path.abspath(fits_files[0])
-        if not os.path.exists(fits_full):
-            logger.error(f"FITS file not found: {fits_full}")
-            sys.exit(1)
-        validate_ilifu_path(fits_full, label="fits_full")
-    elif len(fits_files) == 2:
-        fits_q = os.path.abspath(fits_files[0])
-        fits_u = os.path.abspath(fits_files[1])
-        for f in [fits_q, fits_u]:
-            if not os.path.exists(f):
-                logger.error(f"FITS file not found: {f}")
-                sys.exit(1)
-            validate_ilifu_path(f, label="fits_stokesQ/U")
-    else:
+    if len(fits_files) != 1:
         logger.error(
-            "ERROR: -F expects 1 file (full Stokes cube) or 2 files (Q U). "
-            f"Got {len(fits_files)} files."
+            "-F expects exactly one path: a full-Stokes IQUV radio-continuum cube. "
+            f"Got {len(fits_files)} entries. Q/U-only inputs are no longer supported."
         )
         sys.exit(1)
+    fits_full = os.path.abspath(fits_files[0])
+    if not os.path.exists(fits_full):
+        logger.error(f"FITS file not found: {fits_full}")
+        sys.exit(1)
+    validate_ilifu_path(fits_full, label="fits_full")
 
     freqlist = os.path.abspath(args.freqlist)
 
@@ -411,7 +393,7 @@ def build_config_from_args(args, workdir):
     # may not be on PATH (it's in the rm-env container); in that case we WARN and
     # skip - the same validation runs again at RUN time after we've materialized
     # the workdir, by which point the container is available.
-    primary_cube = fits_full or fits_q
+    primary_cube = fits_full
     cube_info = None
     try:
         cube_info = cube_validator.validate_freqlist_against_cube(primary_cube, freqlist)
@@ -489,8 +471,6 @@ def build_config_from_args(args, workdir):
 
     updates = {
         ('data', 'fits_full'):     f"'{fits_full}'",
-        ('data', 'fits_stokesQ'):  f"'{fits_q}'",
-        ('data', 'fits_stokesU'):  f"'{fits_u}'",
         ('data', 'freqlist'):      f"'{freqlist}'",
         ('data', 'region_file'):   f"'{region_file_abs}'",
     }
@@ -521,21 +501,20 @@ def build_config_from_args(args, workdir):
     # The chunker uses int(NAXIS2 / parallel) which truncates, and the last chunk
     # absorbs the remainder. Print that math up front so the user can sanity-check
     # before submitting a 100-task array.
-    _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals)
+    _preview_chunk_geometry(args, fits_full, workdir, taskvals)
 
     return config_path
 
 
-def _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals):
+def _preview_chunk_geometry(args, fits_full, workdir, taskvals):
     """Read NAXIS2 from the input cube and log how it will be split."""
     try:
         from astropy.io import fits
     except ImportError:
         return
-    # Config now stores absolute paths (build-only mode), so use them directly.
-    sample_path = fits_full or fits_q
-    if not sample_path or not os.path.exists(sample_path):
+    if not fits_full or not os.path.exists(fits_full):
         return
+    sample_path = fits_full
     try:
         naxis2 = fits.getheader(sample_path)['NAXIS2']
     except Exception:
@@ -562,18 +541,14 @@ def _preview_chunk_geometry(args, fits_full, fits_q, workdir, taskvals):
 _SINGLE_CUBE_BODY = r"""
 # ---- SINGLE-CUBE FLOW (no region file in config) ----
 
-# Stage 1: Stokes Q/U extraction (only if full IQUV cube was supplied)
-if [ -n "$FITS_FULL" ]; then
-    echo "[Stage 1] Extracting Stokes Q/U from full cube..."
-    singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
-    BASENAME=$(basename "$FITS_FULL" .fits)
-    FITS_Q="${BASENAME}.stokesQ.fits"
-    FITS_U="${BASENAME}.stokesU.fits"
-    echo "  -> Created: $FITS_Q"
-    echo "  -> Created: $FITS_U"
-else
-    echo "[Stage 1] Skipping extraction (Q and U already provided)"
-fi
+# Stage 1: Extract Stokes Q and U from the full IQUV input cube
+echo "[Stage 1] Extracting Stokes Q/U from full IQUV cube..."
+singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
+BASENAME=$(basename "$FITS_FULL" .fits)
+FITS_Q="${BASENAME}.stokesQ.fits"
+FITS_U="${BASENAME}.stokesU.fits"
+echo "  -> Created: $FITS_Q"
+echo "  -> Created: $FITS_U"
 
 # Stage 2: Generate the RM synthesis array sbatch
 echo ""
@@ -600,7 +575,7 @@ echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY"
 # Stage 4: Write a merge-prep SLURM job that depends on Stage 3 finishing.
 echo ""
 echo "[Stage 4] Writing merge-prep sbatch (will run after $SLURMID_RMSY)..."
-INPUT_CUBE="${FITS_FULL:-$FITS_Q}"
+INPUT_CUBE="$FITS_FULL"
 cat > merge_prep.sbatch <<MPEOF
 #!/bin/bash
 #SBATCH --nodes=1
@@ -714,7 +689,7 @@ for i in "${!REGION_IDS[@]}"; do
     mkdir -p logs errors processing
 
     # Symlink everything the per-region scripts need (cube, freqlist, support code)
-    for f in "$FITS_FULL" "$FITS_Q" "$FITS_U" "$FREQLIST"; do
+    for f in "$FITS_FULL" "$FREQLIST"; do
         [ -n "$f" ] && [ -f "../$f" ] && ln -sf "../$f" "$(basename "$f")"
     done
     for s in create_subimage.py create_subimage_rmsy_cube.py run_parallel_rmsy.py \
@@ -722,19 +697,13 @@ for i in "${!REGION_IDS[@]}"; do
         [ -f "../$s" ] && ln -sf "../$s" "$s"
     done
 
-    # Stage 1 (per region): extract cropped Stokes Q/U
-    if [ -n "$FITS_FULL" ]; then
-        echo "[r${RID} Stage 1] Extracting Stokes Q/U with crop=${CROP} pointing=${POINT}"
-        singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py \
-            --inputcube "$FITS_FULL" --crop "${CROP}" --pointing "${POINT}"
-        R_BASE=$(basename "$FITS_FULL" .fits)
-        R_FITS_Q="${R_BASE}.stokesQ.fits"
-        R_FITS_U="${R_BASE}.stokesU.fits"
-    else
-        echo "[r${RID} Stage 1] Pre-split Q/U provided; region cropping not applied"
-        R_FITS_Q="$FITS_Q"
-        R_FITS_U="$FITS_U"
-    fi
+    # Stage 1 (per region): extract cropped Stokes Q/U from the full IQUV cube
+    echo "[r${RID} Stage 1] Extracting Stokes Q/U with crop=${CROP} pointing=${POINT}"
+    singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py \
+        --inputcube "$FITS_FULL" --crop "${CROP}" --pointing "${POINT}"
+    R_BASE=$(basename "$FITS_FULL" .fits)
+    R_FITS_Q="${R_BASE}.stokesQ.fits"
+    R_FITS_U="${R_BASE}.stokesU.fits"
 
     # Stage 2 (per region): generate rmsy sbatch
     echo "[r${RID} Stage 2] Generating run_parallel_rmsy.sbatch (region $RID)"
@@ -758,7 +727,7 @@ for i in "${!REGION_IDS[@]}"; do
     ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
 
     # Stage 4 (per region): merge-prep dependent on this region's rmsy completing
-    INPUT_CUBE="${FITS_FULL:-$R_FITS_Q}"
+    INPUT_CUBE="$FITS_FULL"
     cat > merge_prep.sbatch <<MPEOF
 #!/bin/bash
 #SBATCH --nodes=1
@@ -889,8 +858,6 @@ print(s or '$3')
 }}
 
 FITS_FULL=$(read_cfg data fits_full '')
-FITS_Q=$(read_cfg data fits_stokesQ '')
-FITS_U=$(read_cfg data fits_stokesU '')
 FREQLIST=$(read_cfg data freqlist '')
 PARALLEL=$(read_cfg chunking parallel 100)
 CHUNKS=$(read_cfg chunking chunks $PARALLEL)
@@ -1094,7 +1061,7 @@ def materialize_workdir_from_config(config_path, workdir):
     # processing), so it's handled alongside the required cube/freqlist paths
     # only when set.
     missing = []
-    data_keys = ['fits_full', 'fits_stokesQ', 'fits_stokesU', 'freqlist']
+    data_keys = ['fits_full', 'freqlist']
     if (data.get('region_file') or '').strip():
         data_keys.append('region_file')
     for key in data_keys:
@@ -1148,7 +1115,7 @@ def materialize_workdir_from_config(config_path, workdir):
     # Also auto-transpose the symlinked cube if axes are (RA,DEC,STOKES,FREQ).
     data_now, _ = config_parser.parse_config(config_path)
     data_now = data_now.get('data', {})
-    primary_basename = (data_now.get('fits_full') or data_now.get('fits_stokesQ') or '').strip()
+    primary_basename = (data_now.get('fits_full') or '').strip()
     freqlist_basename = (data_now.get('freqlist') or '').strip()
     if primary_basename and freqlist_basename:
         primary_path = os.path.join(workdir, primary_basename)

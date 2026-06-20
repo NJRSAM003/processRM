@@ -86,7 +86,7 @@ cd /idia/projects/<your-project>/<your-workdir>
 
 ### Step 4 — BUILD: generate a config from your inputs
 
-Either pass a full Stokes cube **or** separated Q + U cubes, plus a frequency list. Optionally pass a CARTA region file (`-r`) — each box becomes an independent processing branch.
+Pass a **full-Stokes IQUV radio-continuum cube** plus a frequency list. processRM extracts Stokes I, Q, and U from it internally — standalone Q/U inputs are not accepted. Optionally pass a CARTA region file (`-r`) so each box becomes an independent processing branch.
 
 ```bash
 # Whole cube

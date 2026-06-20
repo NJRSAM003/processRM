@@ -1,4 +1,0 @@
-#CRTFv0 CASA Region Text Format version 0
-centerbox [[561.5870pix, 1068.0216pix], [623.3043pix, 534.2608pix]] coord=J2000, linewidth=2, linestyle=-, color=white
-centerbox [[906.6304pix, 5475.6738pix], [601.0434pix, 556.5215pix]] coord=J2000, linewidth=2, linestyle=-, color=white
-centerbox [[3978.6304pix, 2459.3262pix], [601.0438pix, 489.7393pix]] coord=J2000, linewidth=2, linestyle=-, color=white
