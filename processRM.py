@@ -32,15 +32,116 @@ __version__ = '1.0'
 import argparse
 import os
 import sys
+import json
 import shutil
 import logging
 import re
+import subprocess
 from datetime import datetime
 from time import gmtime
 
 import config_parser
 import cube_validator
 import region_parser
+
+
+# ---- Container-fallback helpers ---------------------------------------------
+# Login nodes typically don't have astropy on the system Python, so the local
+# import paths in cube_validator / region_parser raise ImportError there. But
+# the rm-env container DOES have astropy and the same helper modules baked in.
+# When local validation fails for that reason, BUILD re-runs the same check
+# inside the container via `singularity exec`. Only when the container itself
+# is missing do we fall back to "skip with warning -> let RUN catch it later".
+
+
+def _resolve_rm_container_path(args):
+    """Resolve the rm-env.sif location BUILD should call into.
+
+    Priority: --rm-container override > install default (~/processRM/container).
+    The config-file value isn't consulted here because BUILD runs before the
+    workdir config is written.
+    """
+    if getattr(args, 'rm_container_override', None):
+        return os.path.abspath(os.path.expanduser(args.rm_container_override))
+    return os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
+
+
+def _container_python(container_path, code, timeout=180):
+    """Run a Python snippet inside the rm-env container; return stdout (str).
+
+    Raises ``FileNotFoundError`` if ``container_path`` doesn't exist (no .sif
+    yet -- the user hasn't run setup.sh) and ``RuntimeError`` if singularity
+    itself fails or the snippet exits non-zero.
+    """
+    if not os.path.exists(container_path):
+        raise FileNotFoundError(container_path)
+    try:
+        result = subprocess.run(
+            ['singularity', '--quiet', 'exec', container_path, 'python3', '-c', code],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise FileNotFoundError("singularity binary not on PATH")
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or 'singularity exec failed').strip())
+    return result.stdout
+
+
+def _validate_cube_via_container(container_path, cube_path, freqlist_path):
+    """Re-run cube_validator.validate_freqlist_against_cube inside the container.
+
+    Returns the same dict structure the local helper does. Raises
+    ``cube_validator.CubeStructureError`` if the validation failed inside the
+    container (a real structural problem with the cube, not an env issue).
+    """
+    code = (
+        "import sys, json\n"
+        f"sys.path.insert(0, {SCRIPT_DIR!r})\n"
+        "import cube_validator\n"
+        "try:\n"
+        f"    info = cube_validator.validate_freqlist_against_cube({cube_path!r}, {freqlist_path!r})\n"
+        # the axes dict is fine; ints are JSON-safe
+        "    print(json.dumps({'ok': True, 'info': info}))\n"
+        "except cube_validator.CubeStructureError as e:\n"
+        "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
+    )
+    stdout = _container_python(container_path, code)
+    payload = json.loads(stdout.strip().splitlines()[-1])
+    if not payload['ok']:
+        raise cube_validator.CubeStructureError(payload['error'])
+    return payload['info']
+
+
+def _has_beam_info_via_container(container_path, cube_path):
+    """Re-run cube_validator.has_beam_info inside the container."""
+    code = (
+        "import sys, json\n"
+        f"sys.path.insert(0, {SCRIPT_DIR!r})\n"
+        "import cube_validator\n"
+        f"print(json.dumps(cube_validator.has_beam_info({cube_path!r})))\n"
+    )
+    stdout = _container_python(container_path, code)
+    return json.loads(stdout.strip().splitlines()[-1])
+
+
+def _parse_region_via_container(container_path, region_path, cube_path):
+    """Re-run region_parser.parse_region_file inside the container.
+
+    Loads the cube's WCS header inside the container so world-coord regions
+    can be converted to pixel coords. Returns the same list of dicts the
+    local helper does.
+    """
+    code = (
+        "import sys, json\n"
+        f"sys.path.insert(0, {SCRIPT_DIR!r})\n"
+        "from astropy.io import fits\n"
+        "import region_parser\n"
+        f"hdr = fits.getheader({cube_path!r})\n"
+        f"regs = region_parser.parse_region_file({region_path!r}, hdr)\n"
+        "print(json.dumps(regs))\n"
+    )
+    stdout = _container_python(container_path, code)
+    return json.loads(stdout.strip().splitlines()[-1])
 
 
 def update_config_inplace(config_path, updates):
@@ -389,20 +490,35 @@ def build_config_from_args(args, workdir):
     freqlist = os.path.abspath(args.freqlist)
 
     # ---- Cube structure + freqlist validation (BUILD-time) ----
-    # Validates on the user's source FITS file. On the ilifu login node, astropy
-    # may not be on PATH (it's in the rm-env container); in that case we WARN and
-    # skip - the same validation runs again at RUN time after we've materialized
-    # the workdir, by which point the container is available.
+    # On the ilifu login node astropy isn't on the system Python, but the
+    # rm-env container has it (and the helper modules). Fall back to running
+    # the same validator inside the container via `singularity exec`. Only
+    # if the container itself is missing (no setup.sh yet) do we skip and
+    # defer to RUN.
     primary_cube = fits_full
+    rm_container_path = _resolve_rm_container_path(args)
     cube_info = None
     try:
         cube_info = cube_validator.validate_freqlist_against_cube(primary_cube, freqlist)
     except cube_validator.CubeStructureError as e:
         msg = str(e)
         if 'astropy is required' in msg:
-            logger.warning("  -> skipping BUILD-time cube validation: astropy not available "
-                           "on the login node. The same check runs at RUN time inside the "
-                           "container, so any structural problems will still be caught.")
+            try:
+                cube_info = _validate_cube_via_container(
+                    rm_container_path, primary_cube, freqlist
+                )
+                logger.info("  -> cube validation ran inside the container "
+                            "(no local astropy).")
+            except FileNotFoundError as fe:
+                logger.warning(f"  -> skipping BUILD-time cube validation: no local "
+                               f"astropy and no container at {fe}. Run setup.sh to "
+                               f"fetch it. RUN will validate inside the container.")
+            except RuntimeError as re_err:
+                logger.warning(f"  -> container fallback for cube validation failed: "
+                               f"{re_err}. RUN will retry inside the container.")
+            except cube_validator.CubeStructureError as ce:
+                logger.error(str(ce))
+                sys.exit(1)
         else:
             logger.error(msg)
             sys.exit(1)
@@ -420,10 +536,8 @@ def build_config_from_args(args, workdir):
             )
 
     # ---- Region file: parse + preview if provided ----
-    # Same soft-degrade rule as cube validation: if astropy isn't on the login
-    # node, we skip the preview for world-coord region files and let RUN mode
-    # do the parsing inside the container. Pixel-coord region files don't need
-    # astropy and are always previewed.
+    # World-coord regions need astropy's WCS to convert RA/Dec to pixels. When
+    # local astropy is missing we re-run the parser inside the container.
     region_file_abs = ''
     if args.region_file:
         region_file_abs = os.path.abspath(args.region_file)
@@ -437,19 +551,31 @@ def build_config_from_args(args, workdir):
             wcs_header = _fits.getheader(primary_cube)
         except Exception:
             pass
+        regions = None
         try:
             regions = region_parser.parse_region_file(region_file_abs, wcs_header)
-            logger.info(f"parsed {len(regions)} region(s) from {os.path.basename(region_file_abs)}:")
-            for line in region_parser.describe_regions(regions):
-                logger.info(f"  -> {line}")
         except region_parser.RegionParseError as e:
             if 'no cube WCS was supplied' in str(e):
-                logger.warning("  -> skipping BUILD-time region preview: astropy not "
-                               "available on the login node for world->pixel conversion. "
-                               "RUN mode will parse inside the container.")
+                try:
+                    regions = _parse_region_via_container(
+                        rm_container_path, region_file_abs, primary_cube
+                    )
+                    logger.info("  -> region parse ran inside the container "
+                                "(no local astropy for WCS).")
+                except FileNotFoundError as fe:
+                    logger.warning(f"  -> skipping BUILD-time region preview: no local "
+                                   f"astropy and no container at {fe}. RUN will parse.")
+                except RuntimeError as re_err:
+                    logger.warning(f"  -> container fallback for region parsing failed: "
+                                   f"{re_err}. RUN will retry.")
             else:
                 logger.error(f"Region file '{region_file_abs}': {e}")
                 sys.exit(1)
+        if regions:
+            logger.info(f"parsed {len(regions)} region(s) from "
+                        f"{os.path.basename(region_file_abs)}:")
+            for line in region_parser.describe_regions(regions):
+                logger.info(f"  -> {line}")
         logger.warning(
             "  -> region_file overrides [data] crop and pointing in the config."
         )
@@ -500,7 +626,8 @@ def build_config_from_args(args, workdir):
     # Beam-info heads-up (the config now exists, so the user can act on the
     # advice by editing it before running -R). RUN re-checks and refuses to
     # submit if this is still in a bad state.
-    _check_beam_for_sigma(primary_cube, taskvals, config_path, hard=False)
+    _check_beam_for_sigma(primary_cube, taskvals, config_path, hard=False,
+                          rm_container_path=rm_container_path)
 
     # [CHANGE 2026-06-16]: Geometry preview
     # The chunker uses int(NAXIS2 / parallel) which truncates, and the last chunk
@@ -511,7 +638,7 @@ def build_config_from_args(args, workdir):
     return config_path
 
 
-def _check_beam_for_sigma(cube_path, taskvals, config_path, hard):
+def _check_beam_for_sigma(cube_path, taskvals, config_path, hard, rm_container_path=None):
     """Verify that the cube has the beam metadata PyBDSF needs to build a
     noise map, but ONLY when the config asks for sigma cleaning AND no
     pre-computed noise map is supplied.
@@ -538,14 +665,22 @@ def _check_beam_for_sigma(cube_path, taskvals, config_path, hard):
     try:
         beam = cube_validator.has_beam_info(cube_path)
     except ImportError:
-        # No astropy on the login node -> we can't inspect the cube here.
-        # RUN re-runs this inside the container and will gate appropriately.
-        if not hard:
-            logger.warning("  -> skipping BUILD-time beam-info check: astropy not "
-                           "available on the login node. RUN will validate inside the "
-                           "container before submitting any jobs.")
-            return True
-        raise
+        # No astropy locally -> try the container before giving up
+        if rm_container_path is None:
+            beam = None
+        else:
+            try:
+                beam = _has_beam_info_via_container(rm_container_path, cube_path)
+                logger.info("  -> beam-info check ran inside the container "
+                            "(no local astropy).")
+            except (FileNotFoundError, RuntimeError) as e:
+                if not hard:
+                    logger.warning(f"  -> skipping BUILD-time beam-info check: "
+                                   f"local astropy missing AND container fallback "
+                                   f"failed ({e}). RUN will validate inside the "
+                                   f"container before submitting any jobs.")
+                    return True
+                raise
     if beam is not None:
         logger.info(f"beam info OK ({beam}); sigma cleaning will use a PyBDSF noise map.")
         return True
@@ -1303,7 +1438,11 @@ def materialize_workdir_from_config(config_path, workdir):
         # for sigma cleaning and the cube has no beam metadata, refuse to
         # submit; the noise stage would crash inside SLURM.
         taskvals_now, _ = config_parser.parse_config(config_path)
-        _check_beam_for_sigma(primary_path, taskvals_now, config_path, hard=True)
+        rm_container_now = (
+            taskvals_now.get('slurm', {}).get('rm_container') or ''
+        ).strip() or os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
+        _check_beam_for_sigma(primary_path, taskvals_now, config_path, hard=True,
+                              rm_container_path=rm_container_now)
 
     # Subdirectories — only now that we know we will actually run
     for sub in ['logs', 'processing', 'errors']:
