@@ -9,9 +9,10 @@ From: python:3.11-slim
 #   - RM-Tools-sigma  (rmsynth3d, rmclean3d, RMtools_3D.make_noise_map)
 #       the CIRADA RM-Tools fork with a 2D per-pixel sigma-cutoff path
 #       and the PyBDSF-driven noise-map generator.
-#   - PyBDSF (bdsf)   required by RMtools_3D.make_noise_map.
-#       Installed via micromamba into /opt/conda so the Fortran/Boost
-#       extensions are isolated from the host system.
+#   - PyBDSF (bdsf)   required by RMtools_3D.make_noise_map. Installed
+#       via pip against the system Python; the apt packages above
+#       (gfortran, libboost-python-dev, libboost-numpy-dev) provide the
+#       compile-time deps PyBDSF's Fortran/Boost extensions need.
 #   - numpy, scipy, astropy, matplotlib, h5py, click (pulled by sigma)
 #   - fits2idia       FITS -> HDF5 conversion for CARTA-friendly output.
 #
@@ -70,26 +71,12 @@ From: python:3.11-slim
         ca-certificates \
         && rm -rf /var/lib/apt/lists/*
 
-    # ---- micromamba + bdsf (PyBDSF) --------------------------------------
-    # PyBDSF is awkward to pip-install (compiled Fortran + boost::python),
-    # so we grab a micromamba binary and use it to install bdsf from
-    # conda-forge into /opt/conda. Everything Python below then runs from
-    # /opt/conda/bin/python, so make_noise_map.py (which imports bdsf) and
-    # rmsynth3d/rmclean3d share the same interpreter and site-packages.
-    wget -qO /tmp/micromamba.tar.bz2 \
-        https://micro.mamba.pm/api/micromamba/linux-64/latest
-    tar -xjf /tmp/micromamba.tar.bz2 -C /opt --strip-components=1 bin/micromamba
-    rm /tmp/micromamba.tar.bz2
-
-    # The first invocation MUST be `create` -- `install` errors with
-    # "Expected environment not found at prefix" when /opt/conda is empty.
-    /opt/micromamba create -y -p /opt/conda -c conda-forge \
-        python=3.11 \
-        bdsf
-
-    # ---- RM-Tools-sigma + scientific stack (into the same conda env) -----
-    /opt/conda/bin/pip install --no-cache-dir --upgrade pip setuptools wheel
-    /opt/conda/bin/pip install --no-cache-dir \
+    # ---- Python scientific stack + PyBDSF + RM-Tools-sigma ---------------
+    # Everything goes into the system Python 3.11 (from the base image).
+    # PyBDSF ships source on PyPI and builds against gfortran + boost (both
+    # installed via apt above), so a plain `pip install bdsf` works.
+    pip install --no-cache-dir --upgrade pip setuptools wheel
+    pip install --no-cache-dir \
         "numpy>=1.21,<2.0" \
         "scipy>=1.7" \
         "astropy>=5.0" \
@@ -97,9 +84,12 @@ From: python:3.11-slim
         "h5py>=3.0" \
         "click>=8.0"
 
+    # PyBDSF (used by RMtools_3D.make_noise_map). Slow build; ~5 min.
+    pip install --no-cache-dir bdsf
+
     # Editable install of the sigma fork so RMtools_3D.make_noise_map and
     # the rmsynth3d / rmclean3d console scripts all resolve from /opt.
-    /opt/conda/bin/pip install --no-cache-dir -e /opt/RM-Tools-sigma
+    pip install --no-cache-dir -e /opt/RM-Tools-sigma
 
     # ---- fits2idia (CARTAvis) for the merge stage's HDF5 conversion ------
     apt-get update && apt-get install -y --no-install-recommends \
@@ -112,10 +102,10 @@ From: python:3.11-slim
     cd / && rm -rf /tmp/fits2idia
 
     # ---- Sanity checks ---------------------------------------------------
-    /opt/conda/bin/rmsynth3d --help > /dev/null
-    /opt/conda/bin/rmclean3d --help > /dev/null
-    /opt/conda/bin/python -m RMtools_3D.make_noise_map --help > /dev/null
-    /opt/conda/bin/python -c "import bdsf, astropy, numpy, scipy"
+    rmsynth3d --help > /dev/null
+    rmclean3d --help > /dev/null
+    python -m RMtools_3D.make_noise_map --help > /dev/null
+    python -c "import bdsf, astropy, numpy, scipy"
     which fits2idia
 
     cat > /opt/rm-env-info.txt <<EOF
@@ -123,18 +113,16 @@ RM-env-sigma Singularity Container
 ==================================
 Built for processRM pipeline (RM-Tools-sigma fork)
 Contains:
-  - Python 3.11 (/opt/conda)
+  - Python 3.11 (system, from the python:3.11-slim base image)
   - RM-Tools-sigma : rmsynth3d, rmclean3d, RMtools_3D.make_noise_map
-  - PyBDSF (bdsf)  : noise-map generator dependency
+  - PyBDSF (bdsf)  : noise-map generator dependency (pip-installed)
   - numpy, scipy, astropy, matplotlib, h5py, click
   - fits2idia      : FITS -> HDF5 for CARTA
 EOF
 
 %environment
     export LC_ALL=C
-    # Conda env first on PATH so rmsynth3d / rmclean3d / python all resolve
-    # to the binaries we installed.
-    export PATH="/opt/conda/bin:/usr/local/bin:$PATH"
+    export PATH="/usr/local/bin:$PATH"
     export PYTHONNOUSERSITE=1
     export MPLBACKEND=Agg
 

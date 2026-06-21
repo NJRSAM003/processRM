@@ -16,11 +16,11 @@ This document only covers the rare cases below.
 
 ## What's inside rm-env.sif
 
-- Python 3.11 (`/opt/conda`)
+- Python 3.11 (system, from the `python:3.11-slim` base image)
 - **RM-Tools-sigma** — a lightly modified RM-Tools that adds 2D per-pixel
   noise-map support (`rmsynth3d -N`, `rmclean3d -N -c -<sigma>`) and
   ships the `RMtools_3D.make_noise_map` module
-- **PyBDSF (`bdsf`)** — used by `make_noise_map` to estimate per-channel RMS
+- **PyBDSF (`bdsf`)** — pip-installed, used by `make_noise_map` to estimate per-channel RMS
 - `fits2idia` (FITS → IDIA HDF5 for CARTA)
 - numpy, scipy, astropy, matplotlib, h5py
 
