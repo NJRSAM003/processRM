@@ -76,13 +76,14 @@ From: python:3.11-slim
     # conda-forge into /opt/conda. Everything Python below then runs from
     # /opt/conda/bin/python, so make_noise_map.py (which imports bdsf) and
     # rmsynth3d/rmclean3d share the same interpreter and site-packages.
-    mkdir -p /opt/conda
     wget -qO /tmp/micromamba.tar.bz2 \
         https://micro.mamba.pm/api/micromamba/linux-64/latest
     tar -xjf /tmp/micromamba.tar.bz2 -C /opt --strip-components=1 bin/micromamba
     rm /tmp/micromamba.tar.bz2
 
-    /opt/micromamba install -y -p /opt/conda -c conda-forge \
+    # The first invocation MUST be `create` -- `install` errors with
+    # "Expected environment not found at prefix" when /opt/conda is empty.
+    /opt/micromamba create -y -p /opt/conda -c conda-forge \
         python=3.11 \
         bdsf
 
