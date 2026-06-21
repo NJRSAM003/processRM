@@ -162,6 +162,8 @@ def cancelled_stages_from_sacct():
         n = name.lower()
         if 'orchestrate' in n:
             cancelled.update({'extract'})
+        if n.startswith('noise'):
+            cancelled.add('noise')
         if n.startswith('rmsy'):
             cancelled.update({'chunking', 'rmsynth', 'rmclean'})
         if 'merge' in n:
@@ -172,12 +174,39 @@ def cancelled_stages_from_sacct():
 # ----------------- Stage analysis -----------------
 def count_extraction(workdir):
     """How many Stokes files have been extracted."""
-    expected = ['*.stokesQ.fits', '*.stokesU.fits', '*.freqlist.txt']
+    expected = ['*.stokesI.fits', '*.stokesQ.fits', '*.stokesU.fits', '*.freqlist.txt']
     found = 0
     for pat in expected:
         if glob.glob(os.path.join(workdir, pat)):
             found += 1
     return found, len(expected)
+
+
+def count_noise(workdir):
+    """1/1 if the 2D noise map has been produced (sigma mode), else 0/1."""
+    return (1 if os.path.exists(os.path.join(workdir, 'noise_map.fits')) else 0), 1
+
+
+def discover_regions(workdir):
+    """Return a sorted list of (index, path) for region<N>/ subdirs in workdir.
+
+    A multi-region run is one where the orchestrator created region1/, region2/,
+    ... under the top-level workdir. We treat each of those as an independent
+    mini-workdir with its own processing/, logs/, etc.
+    """
+    pattern = re.compile(r'^region(\d+)$')
+    regions = []
+    try:
+        for entry in os.listdir(workdir):
+            m = pattern.match(entry)
+            if not m:
+                continue
+            full = os.path.join(workdir, entry)
+            if os.path.isdir(full):
+                regions.append((int(m.group(1)), full))
+    except OSError:
+        return []
+    return sorted(regions, key=lambda x: x[0])
 
 
 def count_chunked_inputs(workdir):
@@ -361,33 +390,25 @@ def collect_errors(workdir):
 
 
 # ----------------- Display -----------------
-def display_summary(workdir, show_errors=False, verbose=False):
-    """Display the pipeline summary."""
-    print(f"{C.BOLD}{C.CYAN}")
-    print("=" * 70)
-    print("  processRM Pipeline Status ")
-    print("  RM-synthesis made simple")
-    print("=" * 70)
-    print(f"{C.END}")
-    print(f"  Workdir:    {workdir}")
-    print(f"  Timestamp:  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print()
+def _render_progress_block(label, workdir, total_chunks, cancelled):
+    """Print one region's (or the single-cube workdir's) full progress block:
+    stage bars + output files + per-stage timings + errors.
 
-    # Get total chunks expected
-    total_chunks = read_chunks_from_config(workdir)
-
-    # Stage progress
-    print(f"{C.BOLD}━━━ PIPELINE STAGES ━━━{C.END}")
-
-    cancelled = cancelled_stages_from_sacct()
+    SLURM-wide things (active jobs table) are rendered ONCE by display_summary,
+    not per-region, since SLURM state is global to the user.
+    """
+    print(f"{C.BOLD}{C.CYAN}━━━ {label} ━━━{C.END}  ({workdir})")
 
     def stage_colour(stage):
-        # Orange if cancelled, otherwise the normal cyan
         return C.YELLOW if stage in cancelled else C.CYAN
 
     extract_done, extract_total = count_extraction(workdir)
     print(f"  {stage_colour('extract')}{bar(extract_done, extract_total, label='Extraction')}"
           f"{' (CANCELLED)' if 'extract' in cancelled else ''}{C.END}")
+
+    noise_done, noise_total = count_noise(workdir)
+    print(f"  {stage_colour('noise')}{bar(noise_done, noise_total, label='Noise map')}"
+          f"{' (CANCELLED)' if 'noise' in cancelled else ''}{C.END}")
 
     chunked = count_chunked_inputs(workdir)
     print(f"  {stage_colour('chunking')}{bar(chunked, total_chunks, label='Chunking')}"
@@ -404,13 +425,45 @@ def display_summary(workdir, show_errors=False, verbose=False):
     merged_count, merged_total, merged_files = count_merged(workdir)
     print(f"  {stage_colour('merge')}{bar(merged_count, merged_total, label='Merging')}"
           f"{' (CANCELLED)' if 'merge' in cancelled else ''}{C.END}")
+    return merged_files
+
+
+def display_summary(workdir, show_errors=False, verbose=False):
+    """Display the pipeline summary.
+
+    Auto-detects multi-region runs (workdir contains region<N>/ subdirs) and
+    renders one progress block per region. Single-cube runs render one block
+    against the top-level workdir as before.
+    """
+    print(f"{C.BOLD}{C.CYAN}")
+    print("=" * 70)
+    print("  processRM Pipeline Status ")
+    print("  RM-synthesis made simple")
+    print("=" * 70)
+    print(f"{C.END}")
+    print(f"  Workdir:    {workdir}")
+    print(f"  Timestamp:  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
+
+    total_chunks = read_chunks_from_config(workdir)
+    cancelled = cancelled_stages_from_sacct()
+    regions = discover_regions(workdir)
+
+    # Per-region or single-cube progress blocks
+    region_dirs = [(f"Region {idx}", path) for idx, path in regions] \
+        if regions else [("PIPELINE STAGES", workdir)]
+    all_merged = []
+    for label, region_path in region_dirs:
+        merged_files = _render_progress_block(label, region_path, total_chunks, cancelled)
+        all_merged.append((label, region_path, merged_files))
+        print()
 
     # SLURM jobs
     print(f"{C.BOLD}━━━ ACTIVE SLURM JOBS ━━━{C.END}")
     jobs = squeue_for_user()
     relevant_jobs = [j for j in jobs if any(k in j['name'].lower()
-                                             for k in ['rmsy', 'merge', 'cube'])]
+                                             for k in ['noise', 'rmsy', 'merge', 'cube',
+                                                       'orchestrate'])]
 
     if not relevant_jobs:
         print(f"  {C.GREY}No active SLURM jobs found.{C.END}")
@@ -445,23 +498,33 @@ def display_summary(workdir, show_errors=False, verbose=False):
         print(f"  {C.GREY}(use -v / --verbose for the full per-task table){C.END}")
     print()
 
-    # Output files
+    # Output files (per region when applicable)
     print(f"{C.BOLD}━━━ OUTPUT FILES ━━━{C.END}")
-    if merged_files:
+    any_files = False
+    for label, region_path, merged_files in all_merged:
+        if not merged_files:
+            continue
+        any_files = True
+        if regions:
+            print(f"  {C.BOLD}{label}{C.END}")
         for f in merged_files:
-            full_path = os.path.join(workdir, f)
+            full_path = os.path.join(region_path, f)
             size_mb = os.path.getsize(full_path) / (1024 * 1024)
-            print(f"  {C.GREEN}✓{C.END} {f} ({size_mb:.1f} MB)")
-    else:
+            print(f"    {C.GREEN}✓{C.END} {f} ({size_mb:.1f} MB)")
+    if not any_files:
         print(f"  {C.GREY}No merged output files yet.{C.END}")
     print()
 
-    # Timing analysis
+    # Timing analysis (per region when applicable)
     print(f"{C.BOLD}━━━ PER-STAGE TIMINGS ━━━{C.END}")
-    timings = read_timings(workdir)
-    if not timings:
-        print(f"  {C.GREY}No timing log yet (logs/timings.csv not found).{C.END}")
-    else:
+    any_timings = False
+    for label, region_path in (region_dirs if regions else [(None, workdir)]):
+        timings = read_timings(region_path)
+        if not timings:
+            continue
+        any_timings = True
+        if regions:
+            print(f"  {C.BOLD}{label}{C.END}")
         print(f"  {'STAGE':<10} {'COUNT':<7} {'AVG':<10} {'MIN':<10} {'MAX':<10} "
               f"{'OK':<5} {'FAIL':<5} {'SKIP':<5}")
         print(f"  {'-'*10} {'-'*7} {'-'*10} {'-'*10} {'-'*10} {'-'*5} {'-'*5} {'-'*5}")
@@ -473,11 +536,19 @@ def display_summary(workdir, show_errors=False, verbose=False):
                       f"{fmt_seconds(t['avg']):<10} {fmt_seconds(t['min']):<10} "
                       f"{fmt_seconds(t['max']):<10} {t['ok']:<5} {t['fail']:<5} "
                       f"{t['skipped']:<5}{C.END}")
+    if not any_timings:
+        print(f"  {C.GREY}No timing log yet (logs/timings.csv not found).{C.END}")
     print()
 
-    # Errors / Warnings
+    # Errors / Warnings (per region when applicable)
     print(f"{C.BOLD}━━━ ERROR SUMMARY ━━━{C.END}")
-    errors, warnings = collect_errors(workdir)
+    errors, warnings = {}, {}
+    for _, region_path in (region_dirs if regions else [(None, workdir)]):
+        e, w = collect_errors(region_path)
+        for stage, files in e.items():
+            errors.setdefault(stage, []).extend(files)
+        for stage, files in w.items():
+            warnings.setdefault(stage, []).extend(files)
 
     if not errors and not warnings:
         print(f"  {C.GREEN}No errors or warnings detected.{C.END}")
