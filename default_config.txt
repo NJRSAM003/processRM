@@ -29,13 +29,13 @@ resume_safe = True                # Skip stages with existing output on re-run
 
 # Full help:  singularity exec ~/processRM/container/rm-env.sif rmsynth3d --help
 [rmsynth]
-phimax = 1000                     # -l PHIMAX_RADM2: max Faraday depth (rad/m^2)
-dphi = ''                         # -d DPHI_RADM2: Faraday channel width in rad/m^2; if empty, calculated as FWHM / nsamples
-nsamples = ''                     # -s NSAMPLES: Faraday-depth pixels across FWHM of RMSF; ignored if dphi has a value
-weighttype = 'uniform'            # -w: 'uniform' (default) or 'variance' (needs noise file)
-fit_gaussian_rmsf = True          # -t: Fit Gaussian to RMSF -> writes RMSF_FWHM.fits (useful for science)
-skip_rmsf = False                 # -R: DO NOT enable - rmclean3d needs the RMSF cube to run
-super_resolution = False          # -r: Rudnick & Cotton mode (sharper phi, bigger cubes, slower)
+phimax = 1000                     # -l PHIMAX_RADM2 (float, rad/m^2): max Faraday depth.
+dphi = ''                         # -d DPHI_RADM2 (float, rad/m^2): Faraday channel width. Leave EMPTY ('') to let rmsynth3d auto-calculate as FWHM/nsamples; otherwise write a bare number like 3.5 (no quotes).
+nsamples = ''                     # -s NSAMPLES (int): Faraday-depth pixels across FWHM of RMSF. Leave EMPTY ('') for rmsynth3d's default; ignored when dphi is set.
+weighttype = 'uniform'            # -w: 'uniform' (default) or 'variance' (needs noise file).
+fit_gaussian_rmsf = True          # -t (bool): fit a Gaussian to the RMSF and write RMSF_FWHM.fits.
+skip_rmsf = False                 # -R (bool): DO NOT enable -- rmclean3d needs the RMSF cube to run.
+super_resolution = False          # -r (bool): Rudnick & Cotton mode (sharper phi, bigger cubes, slower).
 
 # Full help:  singularity exec ~/processRM/container/rm-env.sif rmclean3d --help
 [rmclean]

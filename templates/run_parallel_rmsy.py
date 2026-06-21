@@ -133,6 +133,33 @@ def write_sbatch_file(args):
         rmclean_w_flag = f'-w {args.rmsyCleanWindow}'
     else:
         rmclean_w_flag = ''
+
+    # [CHANGE 2026-06-21]: assemble [rmsynth] flags from the config (these used
+    # to be hardcoded to '-l 1000', so dphi / nsamples / weighttype / -t / -r /
+    # -R from the config were silently dropped).
+    def _str_to_bool(s):
+        return str(s).strip().lower() in ('true', '1', 'yes', 'on')
+    rmsynth_flags = [f'-l {args.phimax}']
+    if str(args.dphi).strip():
+        rmsynth_flags.append(f'-d {args.dphi}')
+    if str(args.nsamples).strip():
+        rmsynth_flags.append(f'-s {args.nsamples}')
+    if str(args.weightType).strip():
+        rmsynth_flags.append(f'-w {args.weightType}')
+    if _str_to_bool(args.fitGaussianRmsf):
+        rmsynth_flags.append('-t')
+    if _str_to_bool(args.superResolution):
+        rmsynth_flags.append('-r')
+    if _str_to_bool(args.skipRmsf):
+        # -R means "do not write the RMSF cube". rmclean3d needs that cube as
+        # an input, so enabling this breaks Stage 3 downstream. We pass it
+        # through anyway (user asked for it) but warn loudly at sbatch time.
+        print("WARNING: [rmsynth] skip_rmsf=True -> '-R' will be passed to "
+              "rmsynth3d. rmclean3d cannot run without the RMSF cube; Stage 3 "
+              "WILL fail. Set skip_rmsf=False in the config unless you only "
+              "want the dirty FDF.")
+        rmsynth_flags.append('-R')
+    rmsynth_flag_str = ' '.join(rmsynth_flags)
     sbatch_content = f'''#!/bin/bash
 #SBATCH --array=1-{args.parallel}
 #SBATCH --nodes=1
@@ -189,7 +216,7 @@ if [ -f "$FDF_DIRTY" ]; then
 else
     echo "[Stage 2] Running rmsynth3d for task $TASKID"
     t0=$SECONDS
-    singularity --quiet exec {args.rmContainer} rmsynth3d -l 1000 "$Q_CHUNK" "$U_CHUNK" {args.freqList} {rmsynth_n_flag} -o part_${{TASKID}}_
+    singularity --quiet exec {args.rmContainer} rmsynth3d {rmsynth_flag_str} "$Q_CHUNK" "$U_CHUNK" {args.freqList} {rmsynth_n_flag} -o part_${{TASKID}}_
     rc=$?
     log_stage "rmsynth" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -316,6 +343,28 @@ Examples:
                              'RMtools_3D.make_noise_map). Empty = run rmsynth3d/rmclean3d in '
                              'absolute-threshold mode (no -N). Required for sigma cleaning '
                              '(negative --rmsyCleanThrethold).')
+    # [rmsynth] knobs forwarded from the config. See default_config.txt for what
+    # each one does; rmsynth3d --help for the underlying flag.
+    parser.add_argument('--phimax', type=float, default=1000.0,
+                        help='-l PHIMAX_RADM2: max Faraday depth (rad/m^2).')
+    parser.add_argument('--dphi', default='',
+                        help='-d DPHI_RADM2: Faraday channel width (rad/m^2). '
+                             'Empty -> rmsynth3d auto-calculates from FWHM/nsamples.')
+    parser.add_argument('--nsamples', default='',
+                        help='-s NSAMPLES: Faraday-depth pixels across FWHM of RMSF. '
+                             'Empty -> rmsynth3d default. Ignored when --dphi is set.')
+    parser.add_argument('--weightType', default='uniform',
+                        help="-w: 'uniform' (default) or 'variance' (needs noise file).")
+    parser.add_argument('--fitGaussianRmsf', default='True',
+                        help='-t: fit a Gaussian to the RMSF and write RMSF_FWHM.fits. '
+                             '(True/False, default True.)')
+    parser.add_argument('--superResolution', default='False',
+                        help='-r: Rudnick & Cotton super-resolution mode '
+                             '(sharper phi, bigger cubes, slower). True/False.')
+    parser.add_argument('--skipRmsf', default='False',
+                        help='-R: skip writing the RMSF cube. DANGEROUS: rmclean3d '
+                             'needs the RMSF and Stage 3 will fail without it. '
+                             'True/False, default False.')
     parser.add_argument('--start', action='store_true',
                         help='Submit the sbatch job to SLURM')
 

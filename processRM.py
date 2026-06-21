@@ -825,6 +825,13 @@ singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parall
     --rmsyCleanIterations "$ITERATIONS" \
     --rmsyCleanWindow "$WINDOW" \
     --rmsyCleanGain "$GAIN" \
+    --phimax "$PHIMAX" \
+    --dphi "$DPHI" \
+    --nsamples "$NSAMPLES" \
+    --weightType "$WEIGHTTYPE" \
+    --fitGaussianRmsf "$FIT_GAUSSIAN_RMSF" \
+    --superResolution "$SUPER_RESOLUTION" \
+    --skipRmsf "$SKIP_RMSF" \
     --account "$ACCOUNT" \
     --casaContainer "$CASA_CONTAINER" \
     --rmContainer "$RM_CONTAINER" \
@@ -1020,6 +1027,13 @@ NOISEEOF
         --rmsyCleanIterations "$ITERATIONS" \
         --rmsyCleanWindow "$WINDOW" \
         --rmsyCleanGain "$GAIN" \
+        --phimax "$PHIMAX" \
+        --dphi "$DPHI" \
+        --nsamples "$NSAMPLES" \
+        --weightType "$WEIGHTTYPE" \
+        --fitGaussianRmsf "$FIT_GAUSSIAN_RMSF" \
+        --superResolution "$SUPER_RESOLUTION" \
+        --skipRmsf "$SKIP_RMSF" \
         --account "$ACCOUNT" \
         --casaContainer "$CASA_CONTAINER" \
         --rmContainer "$RM_CONTAINER" \
@@ -1182,6 +1196,13 @@ THRESHOLD=$(read_cfg rmclean threshold 0.0000010)
 ITERATIONS=$(read_cfg rmclean iterations 5000)
 WINDOW=$(read_cfg rmclean window 0)
 GAIN=$(read_cfg rmclean gain 0.1)
+PHIMAX=$(read_cfg rmsynth phimax 1000)
+DPHI=$(read_cfg rmsynth dphi '')
+NSAMPLES=$(read_cfg rmsynth nsamples '')
+WEIGHTTYPE=$(read_cfg rmsynth weighttype uniform)
+FIT_GAUSSIAN_RMSF=$(read_cfg rmsynth fit_gaussian_rmsf True)
+SKIP_RMSF=$(read_cfg rmsynth skip_rmsf False)
+SUPER_RESOLUTION=$(read_cfg rmsynth super_resolution False)
 
 echo "RM container:   $RM_CONTAINER"
 echo "CASA container: $CASA_CONTAINER"
