@@ -415,7 +415,12 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
     SLURM-wide things (active jobs table) are rendered ONCE by display_summary,
     not per-region, since SLURM state is global to the user.
     """
-    print(f"{C.BOLD}{C.CYAN}━━━ {label} ━━━{C.END}  ({workdir})")
+    # Show the path relative to the user's CWD ('./region1' instead of the
+    # full absolute path), since fullSummary is typically run from the
+    # top-level workdir and the region subdirs live right next to it.
+    rel = os.path.relpath(workdir)
+    display_path = rel if rel == '.' else './' + rel
+    print(f"{C.BOLD}{C.CYAN}━━━ {label} ━━━{C.END}  ({display_path})")
 
     def stage_colour(stage):
         return C.YELLOW if stage in cancelled else C.CYAN

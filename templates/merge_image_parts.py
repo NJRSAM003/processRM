@@ -51,15 +51,24 @@ def make_empty_image(inputName, initial_fits_header, mode="normal"):
     hdu = fits.PrimaryHDU(data=dummy_data)
 
     header = hduCubeInput[0].header
-    # Wipe any NAXISn keys the input header carried so we start clean, then
-    # set NAXIS itself and the per-axis sizes consistently.
-    for j in range(1, 10):
+    # [CHANGE 2026-06-22]: rewrite NAXIS keys IN PLACE rather than del + re-add.
+    # FITS requires NAXIS1..NAXISn to appear immediately after NAXIS in the
+    # header; deleting them and re-assigning shoves them to the end and
+    # astropy's verify rejects the file with "'NAXIS1' card at the wrong place".
+    new_n = len(dims)
+    old_n = int(header.get('NAXIS', 0))
+    # 1) strip axes we don't want any more (e.g. going from 4D input to 2D out)
+    for j in range(new_n + 1, max(old_n, new_n) + 1):
         key = f"NAXIS{j}"
         if key in header:
             del header[key]
-    header['NAXIS'] = len(dims)
+    # 2) update NAXIS itself, then each NAXISn -- header.set's after= argument
+    #    is ignored for already-present keys (so it updates in place), and used
+    #    to insert in the correct position when the key is new.
+    header['NAXIS'] = new_n
     for i, dim in enumerate(dims, 1):
-        header[f"NAXIS{i}"] = dim
+        anchor = 'NAXIS' if i == 1 else f'NAXIS{i-1}'
+        header.set(f'NAXIS{i}', dim, after=anchor)
 
     cubeNameOutput = inputName
 
