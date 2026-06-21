@@ -27,7 +27,7 @@ After build/setup, run:
     ./fullSummary                         # check pipeline status
 """
 
-__version__ = '1.0'
+__version__ = '2.0'
 
 import argparse
 import os
