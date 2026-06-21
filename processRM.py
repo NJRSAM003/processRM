@@ -45,13 +45,12 @@ import cube_validator
 import region_parser
 
 
-# ---- Container-fallback helpers ---------------------------------------------
-# Login nodes typically don't have astropy on the system Python, so the local
-# import paths in cube_validator / region_parser raise ImportError there. But
-# the rm-env container DOES have astropy and the same helper modules baked in.
-# When local validation fails for that reason, BUILD re-runs the same check
-# inside the container via `singularity exec`. Only when the container itself
-# is missing do we fall back to "skip with warning -> let RUN catch it later".
+# ---- Container helpers ------------------------------------------------------
+# All Python that needs astropy / RM-Tools runs inside the rm-env container;
+# the helpers below run small snippets of cube_validator / region_parser via
+# `singularity exec`. The local import paths exist only as a no-op fast path
+# when astropy happens to be available on the host; logs don't mention that
+# distinction because the container is the only intended source.
 
 
 def _resolve_rm_container_path(args):
@@ -490,11 +489,8 @@ def build_config_from_args(args, workdir):
     freqlist = os.path.abspath(args.freqlist)
 
     # ---- Cube structure + freqlist validation (BUILD-time) ----
-    # On the ilifu login node astropy isn't on the system Python, but the
-    # rm-env container has it (and the helper modules). Fall back to running
-    # the same validator inside the container via `singularity exec`. Only
-    # if the container itself is missing (no setup.sh yet) do we skip and
-    # defer to RUN.
+    # Runs inside the rm-env container (where astropy lives). If the container
+    # isn't built yet we defer to RUN, which uses the same container.
     primary_cube = fits_full
     rm_container_path = _resolve_rm_container_path(args)
     cube_info = None
@@ -507,15 +503,13 @@ def build_config_from_args(args, workdir):
                 cube_info = _validate_cube_via_container(
                     rm_container_path, primary_cube, freqlist
                 )
-                logger.info("  -> cube validation ran inside the container "
-                            "(no local astropy).")
             except FileNotFoundError as fe:
-                logger.warning(f"  -> skipping BUILD-time cube validation: no local "
-                               f"astropy and no container at {fe}. Run setup.sh to "
-                               f"fetch it. RUN will validate inside the container.")
+                logger.warning(f"  -> skipping BUILD-time cube validation: container "
+                               f"not found at {fe}. Run setup.sh to fetch it. "
+                               f"RUN will validate.")
             except RuntimeError as re_err:
-                logger.warning(f"  -> container fallback for cube validation failed: "
-                               f"{re_err}. RUN will retry inside the container.")
+                logger.warning(f"  -> cube validation failed inside the container: "
+                               f"{re_err}. RUN will retry.")
             except cube_validator.CubeStructureError as ce:
                 logger.error(str(ce))
                 sys.exit(1)
@@ -536,8 +530,8 @@ def build_config_from_args(args, workdir):
             )
 
     # ---- Region file: parse + preview if provided ----
-    # World-coord regions need astropy's WCS to convert RA/Dec to pixels. When
-    # local astropy is missing we re-run the parser inside the container.
+    # World-coord regions need astropy's WCS to convert RA/Dec to pixels, so
+    # the parse runs inside the container.
     region_file_abs = ''
     if args.region_file:
         region_file_abs = os.path.abspath(args.region_file)
@@ -560,13 +554,11 @@ def build_config_from_args(args, workdir):
                     regions = _parse_region_via_container(
                         rm_container_path, region_file_abs, primary_cube
                     )
-                    logger.info("  -> region parse ran inside the container "
-                                "(no local astropy for WCS).")
                 except FileNotFoundError as fe:
-                    logger.warning(f"  -> skipping BUILD-time region preview: no local "
-                                   f"astropy and no container at {fe}. RUN will parse.")
+                    logger.warning(f"  -> skipping BUILD-time region preview: container "
+                                   f"not found at {fe}. RUN will parse.")
                 except RuntimeError as re_err:
-                    logger.warning(f"  -> container fallback for region parsing failed: "
+                    logger.warning(f"  -> region parsing failed inside the container: "
                                    f"{re_err}. RUN will retry.")
             else:
                 logger.error(f"Region file '{region_file_abs}': {e}")
@@ -665,20 +657,17 @@ def _check_beam_for_sigma(cube_path, taskvals, config_path, hard, rm_container_p
     try:
         beam = cube_validator.has_beam_info(cube_path)
     except ImportError:
-        # No astropy locally -> try the container before giving up
+        # Beam check runs inside the container (where astropy lives).
         if rm_container_path is None:
             beam = None
         else:
             try:
                 beam = _has_beam_info_via_container(rm_container_path, cube_path)
-                logger.info("  -> beam-info check ran inside the container "
-                            "(no local astropy).")
             except (FileNotFoundError, RuntimeError) as e:
                 if not hard:
                     logger.warning(f"  -> skipping BUILD-time beam-info check: "
-                                   f"local astropy missing AND container fallback "
-                                   f"failed ({e}). RUN will validate inside the "
-                                   f"container before submitting any jobs.")
+                                   f"container check failed ({e}). RUN will "
+                                   f"validate before submitting any jobs.")
                     return True
                 raise
     if beam is not None:
