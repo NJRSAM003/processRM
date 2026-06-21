@@ -63,6 +63,26 @@ Then either edit `[slurm] rm_container` in your `myconfig.txt`, or pass `--rm-co
 
 ---
 
+## (Maintainer) Rebuild rm-env.sif from the recipe
+
+The recipe (`rm-env.def`) bundles the **RM-Tools-sigma** source from a tree
+that you must stage next to the recipe before building. The %files section
+uses a *relative* path so the build works regardless of whether you run it
+with `sudo`, `--fakeroot`, or `--remote` (a bare `~` would expand to `/root`
+under sudo and fail).
+
+```bash
+cd ~/Documents/processRM/container/
+ln -s ~/Downloads/RM-Tools-sigma RM-Tools-sigma     # or: cp -r ...
+sudo singularity build rm-env.sif rm-env.def        # ~10-20 min
+rm RM-Tools-sigma                                    # tidy up
+```
+
+Then attach the resulting `rm-env.sif` to a new GitHub Release marked
+"Latest" — see the project root README for the release steps.
+
+---
+
 ## Verify the container works
 
 ```bash

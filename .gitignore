@@ -10,6 +10,9 @@ __pycache__/
 # Container binary artifacts (distributed via GitHub Releases, not git)
 container/*.sif
 container/*.simg
+# Source tree staged into container/ at build time (see container/rm-env.def header)
+container/RM-Tools-sigma
+container/RM-Tools-sigma/
 
 # Pipeline-generated outputs (never commit run artifacts)
 processing/

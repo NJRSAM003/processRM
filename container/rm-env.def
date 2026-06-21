@@ -16,13 +16,26 @@ From: python:3.11-slim
 #   - fits2idia       FITS -> HDF5 conversion for CARTA-friendly output.
 #
 # Build instructions:
-#   # The %files section copies RM-Tools-sigma into the image at build time.
-#   # Default expects the source at ~/Downloads/RM-Tools-sigma; edit %files
-#   # if yours lives elsewhere.
-#   singularity build --fakeroot rm-env.sif rm-env.def
 #
-# OR remote build via Sylabs:
-#   singularity build --remote rm-env.sif rm-env.def
+#   1. Stage the RM-Tools-sigma source next to this .def file so the relative
+#      path in %files resolves regardless of which user runs the build (a bare
+#      `~` expands to /root under sudo and the build fails):
+#
+#        cd <this dir>
+#        ln -s ~/Downloads/RM-Tools-sigma RM-Tools-sigma
+#        # (or copy, if you prefer: cp -r ~/Downloads/RM-Tools-sigma .)
+#
+#   2. Build:
+#
+#        sudo singularity build rm-env.sif rm-env.def
+#        # or, if /etc/subuid is configured for fakeroot:
+#        singularity build --fakeroot rm-env.sif rm-env.def
+#        # or remote via Sylabs:
+#        singularity build --remote rm-env.sif rm-env.def
+#
+#   3. Tidy up after a successful build:
+#
+#        rm RM-Tools-sigma
 # ==================================================================
 
 %labels
@@ -31,8 +44,13 @@ From: python:3.11-slim
     Platform ilifu
 
 %files
-    # Local source of RM-Tools-sigma is staged into the image at build time.
-    ~/Downloads/RM-Tools-sigma /opt/RM-Tools-sigma
+    # Path is RELATIVE to the directory containing this .def file. Symlink or
+    # copy the RM-Tools-sigma source tree to this name before building (see
+    # the build instructions in the header). Using a relative path here means
+    # the recipe works whether you build with `sudo`, `--fakeroot`, or
+    # `--remote` -- absolute paths like ~/Downloads/... break under sudo because
+    # the shell expands ~ to /root, not the invoking user's home.
+    RM-Tools-sigma /opt/RM-Tools-sigma
 
 %post
     set -e
