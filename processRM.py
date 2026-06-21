@@ -535,7 +535,17 @@ def _check_beam_for_sigma(cube_path, taskvals, config_path, hard):
     if cfg_threshold >= 0 or cfg_noise_map:
         return True  # absolute mode, or user supplied their own noise map -> no PyBDSF needed
 
-    beam = cube_validator.has_beam_info(cube_path)
+    try:
+        beam = cube_validator.has_beam_info(cube_path)
+    except ImportError:
+        # No astropy on the login node -> we can't inspect the cube here.
+        # RUN re-runs this inside the container and will gate appropriately.
+        if not hard:
+            logger.warning("  -> skipping BUILD-time beam-info check: astropy not "
+                           "available on the login node. RUN will validate inside the "
+                           "container before submitting any jobs.")
+            return True
+        raise
     if beam is not None:
         logger.info(f"beam info OK ({beam}); sigma cleaning will use a PyBDSF noise map.")
         return True

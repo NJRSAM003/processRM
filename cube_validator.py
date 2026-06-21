@@ -122,24 +122,22 @@ def validate_cube_structure(path):
 
 
 def has_beam_info(path):
-    """Return how beam info is carried in a FITS cube, or None.
+    """Return how beam info is carried in a FITS cube.
 
     The PyBDSF-driven noise-map step (RM-Tools-sigma's make_noise_map) needs
-    per-channel BMAJ/BMIN/BPA. The two acceptable sources, in priority order:
+    per-channel BMAJ/BMIN/BPA. Acceptable sources, in priority order:
 
       'header'      -- BMAJ, BMIN, BPA in the primary HDU header
-      'casa_beams'  -- a CASA-style BEAMS table HDU (per-channel beam params)
+      'casa_beams'  -- CASA per-plane beams table:
+                       * CASAMBM=T flag in the primary header (canonical), OR
+                       * any extension HDU whose EXTNAME contains 'BEAM', OR
+                       * any extension BinTableHDU carrying BMAJ/BMIN/BPA columns
 
-    Returns one of the strings above, or None if neither is present. Use this
-    to decide whether the sigma-cleaning path can run; if it returns None, the
-    caller should refuse to submit the noise stage and tell the user to either
-    switch to an absolute threshold (positive `[rmclean] threshold`) or re-image
-    with beam metadata retained.
+    Returns one of those two strings, or None if no beam info was found.
+    Raises ImportError if astropy isn't importable (so callers can distinguish
+    'definitively no beams' from 'couldn't even check').
     """
-    try:
-        from astropy.io import fits
-    except ImportError:
-        return None
+    from astropy.io import fits  # raise if missing -- caller decides what to do
     if not os.path.exists(path):
         return None
     try:
@@ -147,10 +145,21 @@ def has_beam_info(path):
             hdr = hdul[0].header
             if all(k in hdr for k in ('BMAJ', 'BMIN', 'BPA')):
                 return 'header'
+            # CASA writes CASAMBM=T in the primary header whenever it appended
+            # a multi-beams table. This is the most reliable signal because the
+            # extension HDU's EXTNAME isn't standardised across CASA versions.
+            casambm = hdr.get('CASAMBM', None)
+            if str(casambm).strip().upper() in ('T', 'TRUE', '1'):
+                return 'casa_beams'
             for hdu in hdul[1:]:
                 name = (getattr(hdu, 'name', '') or '').upper()
-                if name in ('BEAMS', 'CASA_BEAMS'):
+                if 'BEAM' in name:
                     return 'casa_beams'
+                cols = getattr(hdu, 'columns', None)
+                if cols is not None:
+                    col_names = {str(c.name).upper() for c in cols}
+                    if {'BMAJ', 'BMIN', 'BPA'}.issubset(col_names):
+                        return 'casa_beams'
     except OSError:
         return None
     return None
