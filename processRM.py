@@ -419,43 +419,6 @@ def build_config_from_args(args, workdir):
                 "The original file on /idia/ or /users/ is NOT modified."
             )
 
-    # ---- Beam-info check for sigma cleaning ----
-    # Sigma cleaning (negative [rmclean] threshold) requires PyBDSF, which
-    # needs per-channel BMAJ/BMIN/BPA in the cube header OR a CASA-style
-    # BEAMS table. If neither is present, refuse to build a config that
-    # will fail at the make_noise stage.
-    # We read from DEFAULT_CONFIG here (the template that's about to be
-    # copied to the user's workdir) because the workdir config hasn't been
-    # parsed yet at this point in BUILD.
-    _defaults, _ = config_parser.parse_config(DEFAULT_CONFIG)
-    try:
-        cfg_threshold = float(_defaults.get('rmclean', {}).get('threshold', -5))
-    except (TypeError, ValueError):
-        cfg_threshold = -5.0
-    cfg_noise_map = (_defaults.get('noise', {}).get('noise_map') or '').strip()
-    if cfg_threshold < 0 and not cfg_noise_map:
-        beam = cube_validator.has_beam_info(primary_cube)
-        if beam is None:
-            logger.error("=" * 60)
-            logger.error("Sigma cleaning requested but cube has no beam metadata")
-            logger.error("=" * 60)
-            logger.error(f"  cube:      {primary_cube}")
-            logger.error(f"  threshold: {cfg_threshold}  (negative => N-sigma per pixel)")
-            logger.error("")
-            logger.error("PyBDSF (used to build the noise map) needs either:")
-            logger.error("  - BMAJ/BMIN/BPA in the primary FITS header, or")
-            logger.error("  - a CASA-style BEAMS table HDU (per-channel beam parameters)")
-            logger.error("Neither was found.")
-            logger.error("")
-            logger.error("Pick one to proceed:")
-            logger.error("  1. Re-image the cube so it retains beam metadata, then re-run.")
-            logger.error("  2. Switch to an absolute cutoff by editing the config:")
-            logger.error("       [rmclean] threshold = 0.0000010   # positive = Jy/beam/RMSF")
-            logger.error("  3. Pre-compute a 2D noise map yourself and point at it via:")
-            logger.error("       [noise] noise_map = '/path/to/noise_map.fits'")
-            sys.exit(1)
-        logger.info(f"beam info OK ({beam}); sigma cleaning will use a PyBDSF noise map.")
-
     # ---- Region file: parse + preview if provided ----
     # Same soft-degrade rule as cube validation: if astropy isn't on the login
     # node, we skip the preview for world-coord region files and let RUN mode
@@ -534,6 +497,11 @@ def build_config_from_args(args, workdir):
 
     update_config_inplace(config_path, updates)
 
+    # Beam-info heads-up (the config now exists, so the user can act on the
+    # advice by editing it before running -R). RUN re-checks and refuses to
+    # submit if this is still in a bad state.
+    _check_beam_for_sigma(primary_cube, taskvals, config_path, hard=False)
+
     # [CHANGE 2026-06-16]: Geometry preview
     # The chunker uses int(NAXIS2 / parallel) which truncates, and the last chunk
     # absorbs the remainder. Print that math up front so the user can sanity-check
@@ -541,6 +509,62 @@ def build_config_from_args(args, workdir):
     _preview_chunk_geometry(args, fits_full, workdir, taskvals)
 
     return config_path
+
+
+def _check_beam_for_sigma(cube_path, taskvals, config_path, hard):
+    """Verify that the cube has the beam metadata PyBDSF needs to build a
+    noise map, but ONLY when the config asks for sigma cleaning AND no
+    pre-computed noise map is supplied.
+
+    Reads the live [rmclean] threshold and [noise] noise_map from ``taskvals``
+    so the check reflects whatever the user has (or hasn't) edited in the
+    config. Returns True if it's safe to proceed.
+
+    ``hard=False`` (BUILD): on failure, log a WARN block and return False.
+    The config has just been created, so the user can act on the advice
+    by editing it before they run ``-R``.
+    ``hard=True`` (RUN): on failure, log an ERROR block and ``sys.exit(1)``.
+    We're about to submit SLURM jobs that would crash inside the noise stage.
+    """
+    try:
+        cfg_threshold = float(taskvals.get('rmclean', {}).get('threshold', -5))
+    except (TypeError, ValueError):
+        cfg_threshold = -5.0
+    cfg_noise_map = (taskvals.get('noise', {}).get('noise_map') or '').strip()
+
+    if cfg_threshold >= 0 or cfg_noise_map:
+        return True  # absolute mode, or user supplied their own noise map -> no PyBDSF needed
+
+    beam = cube_validator.has_beam_info(cube_path)
+    if beam is not None:
+        logger.info(f"beam info OK ({beam}); sigma cleaning will use a PyBDSF noise map.")
+        return True
+
+    log = logger.error if hard else logger.warning
+    title = ("REFUSING TO RUN: sigma cleaning requested but cube has no beam metadata"
+             if hard else
+             "Heads-up: the default sigma cleaning won't work for this cube")
+    log("=" * 60)
+    log(title)
+    log("=" * 60)
+    log(f"  cube:      {cube_path}")
+    log(f"  threshold: {cfg_threshold}  (negative => N-sigma per pixel)")
+    log("")
+    log("PyBDSF (used to build the noise map) needs either:")
+    log("  - BMAJ/BMIN/BPA in the primary FITS header, or")
+    log("  - a CASA-style BEAMS table HDU (per-channel beam parameters)")
+    log("Neither was found in your cube.")
+    log("")
+    log(f"Edit {config_path}, pick one, then continue:")
+    log("  1. Switch to an absolute cutoff:")
+    log("       [rmclean] threshold = 0.0000010   # positive = Jy/beam/RMSF")
+    log("  2. Pre-compute a 2D noise map yourself and point at it:")
+    log("       [noise]   noise_map = '/path/to/noise_map.fits'")
+    log("  3. Re-image the cube so it retains beam metadata, then re-build.")
+    if hard:
+        log("")
+        sys.exit(1)
+    return False
 
 
 def _preview_chunk_geometry(args, fits_full, workdir, taskvals):
@@ -1264,6 +1288,12 @@ def materialize_workdir_from_config(config_path, workdir):
                 logger.error(f"Auto-transpose failed: {e}")
                 cleanup_run_artifacts(workdir, keep_config=config_path)
                 sys.exit(1)
+
+        # Hard beam-info gate: if the (possibly user-edited) config still asks
+        # for sigma cleaning and the cube has no beam metadata, refuse to
+        # submit; the noise stage would crash inside SLURM.
+        taskvals_now, _ = config_parser.parse_config(config_path)
+        _check_beam_for_sigma(primary_path, taskvals_now, config_path, hard=True)
 
     # Subdirectories — only now that we know we will actually run
     for sub in ['logs', 'processing', 'errors']:
