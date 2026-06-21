@@ -66,40 +66,112 @@ def _resolve_rm_container_path(args):
 
 
 class _LoginNodeUnsupported(RuntimeError):
-    """singularity exec itself failed because the kernel won't grant user
-    namespace mappings on this node. Almost always means the user is on an
-    ilifu login node and needs a compute session for strict BUILD validation."""
+    """singularity exec itself can't run here and we have no usable fallback.
+    On ilifu this typically means we're on the login node AND `sacctmgr`
+    didn't return a default account for the srun wrapper."""
+
+
+def _on_compute_node():
+    """True when we're inside a SLURM allocation (srun/sbatch/small-sesh).
+    Outside one, $SLURM_JOB_ID is unset -- that's the login node."""
+    return bool(os.environ.get('SLURM_JOB_ID'))
+
+
+_SLURM_ACCOUNT_CACHE = []  # sentinel: empty = not resolved yet
+
+
+def _resolve_slurm_account():
+    """Look up the user's default SLURM account from `sacctmgr`.
+
+    Cached for the lifetime of the process so we don't re-query for each of
+    the 3-4 BUILD validation calls. Returns None if sacctmgr is missing,
+    times out, or has no DefaultAccount for this user.
+    """
+    if _SLURM_ACCOUNT_CACHE:
+        return _SLURM_ACCOUNT_CACHE[0]
+    user = os.environ.get('USER', '')
+    account = None
+    if user:
+        try:
+            result = subprocess.run(
+                ['sacctmgr', '-nP', 'show', 'user', user, 'format=DefaultAccount'],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                first = (result.stdout or '').strip().splitlines()
+                if first and first[0].strip():
+                    account = first[0].strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    _SLURM_ACCOUNT_CACHE.append(account)
+    return account
 
 
 def _container_python(container_path, code, timeout=180):
     """Run a Python snippet inside the rm-env container; return stdout (str).
 
+    On a compute node (``$SLURM_JOB_ID`` is set) we call singularity exec
+    directly. On a login node we wrap it in ``srun`` so the snippet runs
+    on a compute node and stdout streams back to the caller's terminal --
+    ilifu login nodes don't grant user-namespace mappings, so a direct
+    singularity exec there would always fail.
+
     Raises:
-      FileNotFoundError       -- container_path doesn't exist (user hasn't run
-                                 setup.sh) or singularity binary missing.
-      _LoginNodeUnsupported   -- singularity exec itself can't run here, e.g.
-                                 'setgroups: Permission denied' or 'user
-                                 namespace mappings' on an ilifu login node.
-      RuntimeError            -- any other non-zero exit from the snippet.
+      FileNotFoundError       -- container_path doesn't exist, or singularity
+                                 / srun binary missing.
+      _LoginNodeUnsupported   -- we're on a login node but can't determine a
+                                 SLURM account for the srun wrapper.
+      RuntimeError            -- non-zero exit from the snippet itself.
     """
     if not os.path.exists(container_path):
         raise FileNotFoundError(container_path)
+
+    if _on_compute_node():
+        cmd = ['singularity', '--quiet', 'exec', container_path,
+               'python3', '-c', code]
+        outer_timeout = timeout
+    else:
+        # Login node -> srun a tiny compute slot. Defaults match
+        # processMeerKAT's lightweight validation jobs: 1 CPU, 2 GB, 5 min.
+        account = _resolve_slurm_account()
+        if account is None:
+            raise _LoginNodeUnsupported(
+                "BUILD-time validation needs to run on a compute node but "
+                "couldn't determine your SLURM account (sacctmgr did not "
+                "return a DefaultAccount). Set one with: "
+                "`sacctmgr modify user name=$USER set DefaultAccount=<account>` "
+                "or grab a compute session manually (e.g. `small-sesh`)."
+            )
+        logger.info(f"  -> running validation on a compute node via srun "
+                    f"(account={account}, this can take a few seconds)...")
+        cmd = ['srun', '--quiet',
+               '--partition=Main',
+               '--time=00:05:00',
+               '--mem=2G',
+               '--cpus-per-task=1',
+               f'--account={account}',
+               'singularity', '--quiet', 'exec', container_path,
+               'python3', '-c', code]
+        # Generous wall-time -- queue wait + exec time.
+        outer_timeout = timeout + 600
+
     try:
         result = subprocess.run(
-            ['singularity', '--quiet', 'exec', container_path, 'python3', '-c', code],
-            capture_output=True, text=True, timeout=timeout,
+            cmd, capture_output=True, text=True, timeout=outer_timeout,
         )
-    except FileNotFoundError:
-        raise FileNotFoundError("singularity binary not on PATH")
+    except FileNotFoundError as e:
+        raise FileNotFoundError(str(e))
+
     if result.returncode != 0:
-        err = (result.stderr or result.stdout or 'singularity exec failed').strip()
+        err = (result.stderr or result.stdout or 'exec failed').strip()
+        # If srun managed to land us on a node that ALSO can't unshare
+        # namespaces, or if we're on a compute node misconfigured the same
+        # way, surface the cleaner message instead of the raw Apptainer dump.
         if 'setgroups' in err or 'user namespace mappings' in err:
             raise _LoginNodeUnsupported(
-                "singularity exec can't run on this node (no user-namespace "
-                "mapping). This is normal on ilifu login nodes. Grab a compute "
-                "session (e.g. `small-sesh`) and re-run if you want strict "
-                "BUILD-time validation; otherwise RUN will validate on a "
-                "compute node."
+                "singularity exec couldn't unshare a user namespace even on "
+                "the compute node it ran on. Try a different partition or "
+                "ask ilifu support."
             )
         raise RuntimeError(err)
     return result.stdout
