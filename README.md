@@ -125,6 +125,10 @@ Add `--watch` for live updates every 10 seconds, or `--errors` for the full erro
 ./fullSummary --errors
 ```
 
+Example output for a 3-region run mid-pipeline:
+
+![fullSummary demo](docs/fullSummary_demo.png)
+
 ---
 
 ## Config sections (overview)
