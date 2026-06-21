@@ -209,10 +209,27 @@ def create_all_cubes(inputcube, slurmArrayTaskId):
     def get_part_number(x):
         return int(x.split("part_")[1].split("_")[0])
     listing_all_parts = sorted(glob("processing/*fits"), key = get_part_number)
+
+    # [CHANGE 2026-06-22]: only merge rmsynth3d / rmclean3d output products.
+    # processing/ also contains the input Q/U cube chunks and noise_map slices
+    # we keep around for fullSummary's chunking bar; if their basenames leak
+    # into listing_basenames the merge would overwrite the cropped Q/U/noise
+    # files in the region root with empty-header placeholders and the array
+    # tasks would race each other to corrupt them. Restrict to the names
+    # rmsynth3d / rmclean3d produce.
+    def _is_rmsynth_output(basename):
+        n = basename.lower()
+        return n.startswith('fdf_') or n.startswith('rmsf_') or n.startswith('clean_')
+
+    all_basenames = sorted({
+        x.split("part_", 1)[1].split("_", 1)[1]
+        for x in listing_all_parts
+    })
+    rmsynth_basenames = [bn for bn in all_basenames if _is_rmsynth_output(bn)]
     if slurmArrayTaskId:
-        listing_basenames = sorted(list(set([ x.split("part_", 1)[1].split("_", 1)[1] for x in listing_all_parts ])))[int(slurmArrayTaskId) - 1:int(slurmArrayTaskId)]
+        listing_basenames = rmsynth_basenames[int(slurmArrayTaskId) - 1:int(slurmArrayTaskId)]
     else:
-        listing_basenames = sorted(list(set([ x.split("part_", 1)[1].split("_", 1)[1] for x in listing_all_parts ])))
+        listing_basenames = rmsynth_basenames
     print(listing_basenames)
 
     #for inputName in listing_all_parts[:len(listing_basenames)]:
@@ -251,7 +268,16 @@ def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa
     def get_part_number(x):
         return int(x.split("part_")[1].split("_")[0])
     listing_all_parts = sorted(glob("processing/*fits"), key = get_part_number)
-    length_listing_basenames = len(set([ x.split("part_", 1)[1].split("_", 1)[1] for x in listing_all_parts ]))
+    # Mirror create_all_cubes: only count rmsynth3d / rmclean3d output products
+    # so the merge array's size matches the actual number of merge targets.
+    def _is_rmsynth_output(basename):
+        n = basename.lower()
+        return n.startswith('fdf_') or n.startswith('rmsf_') or n.startswith('clean_')
+    rmsynth_basenames = {
+        bn for bn in (x.split("part_", 1)[1].split("_", 1)[1] for x in listing_all_parts)
+        if _is_rmsynth_output(bn)
+    }
+    length_listing_basenames = len(rmsynth_basenames)
 
     filename_sbatch = __file__.replace(".py", ".sbatch")
     print(f"Writing sbatch file: {filename_sbatch}")
