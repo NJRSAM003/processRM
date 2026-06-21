@@ -212,11 +212,10 @@ def discover_regions(workdir):
 def count_chunked_inputs(workdir):
     """How many input chunks have been created in processing/.
 
-    run_parallel_rmsy.py deletes the Q/U chunks once that task's RM-clean
-    finishes (see the 'Cleanup intermediate chunks' block), so a value of
-    0 here doesn't mean chunking failed; it means chunking + rmsynth +
-    rmclean all completed for that task. timings.csv is consulted by the
-    caller to surface the real count when this returns 0.
+    Q/U .fits chunks are kept around for the whole run so the chunking
+    bar reflects the actual number of chunks made. (Only the CASA .im
+    intermediates get cleaned up after exportfits.) The caller still uses
+    rmsynth / rmclean / timings.csv as lower bounds, defensively.
     """
     pattern = os.path.join(workdir, 'processing', 'part_*_*stokesQ.fits')
     return len(glob.glob(pattern))

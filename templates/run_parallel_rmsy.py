@@ -233,9 +233,11 @@ else
     log_stage "rmclean" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
 
-# Cleanup intermediate chunks once RM clean completed
+# Drop only the CASA .im intermediate directories (these are large and
+# unused once exportfits has produced the .fits). Keep the Q/U .fits
+# chunks themselves so fullSummary's Chunking bar fills up first and the
+# pipeline reads chronologically: Chunking -> RM Synthesis -> RM Clean.
 if [ -f "$FDF_CLEAN" ]; then
-    rm -f "$Q_CHUNK" "$U_CHUNK"
     rm -rf "${{Q_CHUNK}}.im" "${{U_CHUNK}}.im"
 fi
     '''
