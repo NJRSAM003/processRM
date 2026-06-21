@@ -419,19 +419,27 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
 
     timings = read_timings(workdir)
 
-    # Chunks get deleted post-rmclean; fall back to the timings log for the real
-    # count when nothing is on disk.
-    chunked = count_chunked_inputs(workdir)
-    if chunked == 0 and 'chunking' in timings:
-        chunked = timings['chunking']['ok'] + timings['chunking']['skipped']
+    # rmsynth (FDF_tot_dirty) and rmclean (FDF_clean_tot) outputs don't get
+    # cleaned up, so their on-disk counts are honest.
+    rmsynth = count_rmsynth(workdir)
+    rmclean = count_rmclean(workdir)
+
+    # Chunks (Q/U .fits) ARE deleted as soon as the same task's rmclean
+    # finishes, so a naive count under-reports. Pin the bar to the highest
+    # of: chunks still on disk, the chunking row in timings.csv, the rmsynth
+    # count (rmsynth can't have run without chunking), and rmclean count.
+    chunked = max(
+        count_chunked_inputs(workdir),
+        timings.get('chunking', {}).get('ok', 0) + timings.get('chunking', {}).get('skipped', 0),
+        rmsynth,
+        rmclean,
+    )
     print(f"  {stage_colour('chunking')}{bar(chunked, total_chunks, label='Chunking')}"
           f"{' (CANCELLED)' if 'chunking' in cancelled else ''}{C.END}")
 
-    rmsynth = count_rmsynth(workdir)
     print(f"  {stage_colour('rmsynth')}{bar(rmsynth, total_chunks, label='RM Synthesis')}"
           f"{' (CANCELLED)' if 'rmsynth' in cancelled else ''}{C.END}")
 
-    rmclean = count_rmclean(workdir)
     print(f"  {stage_colour('rmclean')}{bar(rmclean, total_chunks, label='RM Clean')}"
           f"{' (CANCELLED)' if 'rmclean' in cancelled else ''}{C.END}")
 
