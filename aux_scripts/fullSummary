@@ -188,11 +188,14 @@ def count_noise(workdir):
 
 
 def discover_regions(workdir):
-    """Return a sorted list of (index, path) for region<N>/ subdirs in workdir.
+    """Return a sorted list of (index, path, label) for region<N>/ subdirs.
 
     A multi-region run is one where the orchestrator created region1/, region2/,
     ... under the top-level workdir. We treat each of those as an independent
-    mini-workdir with its own processing/, logs/, etc.
+    mini-workdir with its own processing/, logs/, etc. The orchestrator drops
+    a region.label file inside each subdir when the source region file carried
+    a label="..." (CRTF) or text={...} (DS9); we read it back so the Region
+    header can read "Region 1 (Halo)" instead of just "Region 1".
     """
     pattern = re.compile(r'^region(\d+)$')
     regions = []
@@ -202,8 +205,17 @@ def discover_regions(workdir):
             if not m:
                 continue
             full = os.path.join(workdir, entry)
-            if os.path.isdir(full):
-                regions.append((int(m.group(1)), full))
+            if not os.path.isdir(full):
+                continue
+            label = ''
+            label_file = os.path.join(full, 'region.label')
+            if os.path.exists(label_file):
+                try:
+                    with open(label_file) as f:
+                        label = f.read().strip()
+                except OSError:
+                    pass
+            regions.append((int(m.group(1)), full, label))
     except OSError:
         return []
     return sorted(regions, key=lambda x: x[0])
@@ -487,8 +499,10 @@ def display_summary(workdir, show_errors=False, verbose=False):
     regions = discover_regions(workdir)
 
     # Per-region or single-cube progress blocks
-    region_dirs = [(f"Region {idx}", path) for idx, path in regions] \
-        if regions else [("PIPELINE STAGES", workdir)]
+    region_dirs = [
+        (f"Region {idx}" + (f" ({label})" if label else ""), path)
+        for idx, path, label in regions
+    ] if regions else [("PIPELINE STAGES", workdir)]
     all_merged = []
     for label, region_path in region_dirs:
         merged_files = _render_progress_block(label, region_path, total_chunks, cancelled)

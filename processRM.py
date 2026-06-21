@@ -1038,12 +1038,17 @@ def _multi_region_body(regions):
         f'"[{int(round(r["x_center_px"]))},{int(round(r["y_center_px"]))}]"'
         for r in regions
     )
+    # Optional per-region labels lifted from the region file (label="..." in
+    # CRTF, text={...} in DS9). _safe_label in region_parser strips quotes
+    # and backslashes so these are safe to drop straight into a bash array.
+    labels = ' '.join(f'"{(r.get("label") or "")}"' for r in regions)
     return r"""
 # ---- MULTI-REGION FLOW (region_file in config -> one branch per box) ----
 
 REGION_IDS=(""" + ids + r""")
 REGION_CROPS=(""" + crops + r""")
 REGION_POINTS=(""" + points + r""")
+REGION_LABELS=(""" + labels + r""")
 
 ALL_NOISE_IDS=""
 ALL_RMSY_IDS=""
@@ -1053,16 +1058,19 @@ for i in "${!REGION_IDS[@]}"; do
     RID=${REGION_IDS[$i]}
     CROP=${REGION_CROPS[$i]}
     POINT=${REGION_POINTS[$i]}
+    LABEL=${REGION_LABELS[$i]}
     SUFFIX="_r${RID}"
     REGION_DIR="region${RID}"
 
     echo ""
     echo "=========================================="
-    echo "  Region ${RID}: crop=${CROP} pointing=${POINT}"
+    echo "  Region ${RID}${LABEL:+ ($LABEL)}: crop=${CROP} pointing=${POINT}"
     echo "=========================================="
     mkdir -p "$REGION_DIR"
     cd "$REGION_DIR"
     mkdir -p logs errors processing
+    # Persist the label so fullSummary can render it next to "Region N".
+    [ -n "$LABEL" ] && echo "$LABEL" > region.label
 
     # Symlink everything the per-region scripts need (cube, freqlist, support code)
     for f in "$FITS_FULL" "$FREQLIST"; do

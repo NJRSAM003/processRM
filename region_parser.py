@@ -184,6 +184,31 @@ _CRTF_LINE_RE = re.compile(
     r'\s*,\s*\[\s*(?P<s1>[^,]+),\s*(?P<s2>[^\]]+)\s*\]\s*\]',
 )
 
+# CARTA label syntax in CRTF:  ..., label="Halo", ...
+# CARTA label syntax in DS9:   ... text={Halo}   or   ... text="Halo"
+_LABEL_CRTF_RE = re.compile(r'\blabel\s*=\s*"([^"]*)"', re.IGNORECASE)
+_LABEL_DS9_RE = re.compile(r'\btext\s*=\s*(?:\{([^}]*)\}|"([^"]*)")', re.IGNORECASE)
+
+
+def _safe_label(s):
+    """Strip quotes, braces, backslashes, and whitespace from a label so it's
+    safe to embed in bash strings, file paths, and SLURM job names."""
+    if not s:
+        return ''
+    return re.sub(r'[\'"\\{}]', '', s).strip()
+
+
+def _extract_crtf_label(line):
+    m = _LABEL_CRTF_RE.search(line)
+    return _safe_label(m.group(1)) if m else ''
+
+
+def _extract_ds9_label(line):
+    m = _LABEL_DS9_RE.search(line)
+    if not m:
+        return ''
+    return _safe_label(m.group(1) or m.group(2) or '')
+
 
 def _parse_crtf(text, wcs_header, world):
     boxes = []
@@ -224,7 +249,7 @@ def _parse_crtf(text, wcs_header, world):
                 )
             width_px = int(round(w_val))
             height_px = int(round(h_val))
-        boxes.append((x_px, y_px, width_px, height_px))
+        boxes.append((x_px, y_px, width_px, height_px, _extract_crtf_label(ls)))
     return boxes
 
 
@@ -290,7 +315,7 @@ def _parse_ds9(text, wcs_header, world):
             y_px = float(args_raw[1])
             width_px = int(round(float(args_raw[2])))
             height_px = int(round(float(args_raw[3])))
-        boxes.append((x_px, y_px, width_px, height_px))
+        boxes.append((x_px, y_px, width_px, height_px, _extract_ds9_label(ls)))
     return boxes
 
 
@@ -344,8 +369,9 @@ def parse_region_file(path, wcs_header=None):
             'y_center_px': float(y),
             'width_px': int(w),
             'height_px': int(h),
+            'label': (lbl or '').strip(),
         }
-        for i, (x, y, w, h) in enumerate(boxes)
+        for i, (x, y, w, h, lbl) in enumerate(boxes)
     ]
 
 
@@ -353,8 +379,10 @@ def describe_regions(regions):
     """Human-readable one-liner per region, for the BUILD-time preview."""
     out = []
     for r in regions:
+        label = (r.get('label') or '').strip()
+        head = f"region{r['index']}" + (f" ({label})" if label else "")
         out.append(
-            f"region{r['index']}: centre=({r['x_center_px']:.1f}, {r['y_center_px']:.1f})px, "
+            f"{head}: centre=({r['x_center_px']:.1f}, {r['y_center_px']:.1f})px, "
             f"size={r['width_px']}x{r['height_px']}px"
         )
     return out
