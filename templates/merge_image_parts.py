@@ -19,55 +19,47 @@ from astropy.io import fits
 
 def make_empty_image(inputName, initial_fits_header, mode="normal"):
     """
-    Generate an empty dummy fits data cube.
+    Generate an empty FITS file sized to hold the merged output of one rmsynth3d
+    product (FDF_*_tot, RMSF_*, FDF_maxPI, RMSF_FWHM, ...).
 
-    The data cube dimensions are derived from the cube images.
-
+    rmsynth3d writes some products as 4D cubes (1, NPHI, NY, NX) and others
+    as bare 2D images (NY, NX). We inspect the first chunk to decide which
+    shape to allocate, and write a header whose NAXIS keyword count agrees
+    with the actual data rank -- otherwise astropy's verify refuses to flush
+    the file with errors like "NAXIS3 out of range when NAXIS == 2".
     """
     cubeNameInput = inputName
-        
+
     hduCubeInput = fits.open("processing/part_1_" + cubeNameInput, memmap=True, mode="update")
-    try:
-        zdim, xdim, ydim = np.squeeze(hduCubeInput[0].data).shape[-3:]
-    except:
-        xdim, ydim = np.squeeze(hduCubeInput[0].data).shape[-2:]
-        zdim = 1
+    sample_shape = np.squeeze(hduCubeInput[0].data).shape
 
-    #zdim = 1
+    # [CHANGE 2026-06-21]: detect 2D vs 3D+ chunks explicitly. Previously the
+    # try/except always treated 2D inputs as 4D (zdim=wdim=1) with NAXIS=4 in
+    # the header, which crashed astropy's verify on close.
+    is_2d = len(sample_shape) < 3
+    if is_2d:
+        zdim = wdim = None
+    else:
+        zdim = sample_shape[-3]
+        wdim = 1
 
-    wdim = 1
-
-    #xdim, ydim = get_cropped_size_in_px(conf)
     xdim, ydim = initial_fits_header['NAXIS1'], initial_fits_header['NAXIS2']
+    dims = (xdim, ydim) if is_2d else (xdim, ydim, zdim, wdim)
 
-    dims = tuple([xdim, ydim, zdim, wdim])
-
-    # create header
-
-    dummy_dims = tuple(1 for d in dims)
-    #dummy_data = np.ones(dummy_dims, dtype=np.float64) * np.nan
-    #dummy_data = dummy_data.fill(np.nan)
+    dummy_dims = tuple(1 for _ in dims)
     dummy_data = np.zeros(dummy_dims, dtype=np.float32)
     hdu = fits.PrimaryHDU(data=dummy_data)
 
     header = hduCubeInput[0].header
+    # Wipe any NAXISn keys the input header carried so we start clean, then
+    # set NAXIS itself and the per-axis sizes consistently.
+    for j in range(1, 10):
+        key = f"NAXIS{j}"
+        if key in header:
+            del header[key]
+    header['NAXIS'] = len(dims)
     for i, dim in enumerate(dims, 1):
-        header["NAXIS%d" % i] = dim
-
-    #header["NAXIS"] = 3
-    #del header["NAXIS4"]
-    #del header["PC1_4"]
-    #del header["PC2_4"]
-    #del header["PC3_4"]
-    #del header["PC4_1"]
-    #del header["PC4_2"]
-    #del header["PC4_3"]
-    #del header["PC4_4"]
-    #del header["CTYPE4"]
-    #del header["CRVAL4"]
-    #del header["CDELT4"]
-    #del header["CRPIX4"]
-    #del header["CUNIT4"]
+        header[f"NAXIS{i}"] = dim
 
     cubeNameOutput = inputName
 
@@ -119,6 +111,11 @@ def fix_invalid_stokes_axis(filepathCube):
         return
     with fits.open(filepathCube, mode='update') as hud:
         header = hud[0].header
+        # CRVAL4 is meaningless on 2D outputs (FDF_maxPI / FDF_peakRM /
+        # RMSF_FWHM) -- writing it would trigger an astropy verify error
+        # on close because NAXIS=2 has no axis 4.
+        if int(header.get('NAXIS', 0)) < 4:
+            return
         crval4 = header.get('CRVAL4', None)
         if crval4 == 0 or crval4 is None:
             header['CRVAL4'] = 1

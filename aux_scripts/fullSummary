@@ -651,10 +651,22 @@ def main():
         sys.exit(1)
 
     if args.watch:
+        # Exit the watch loop as soon as there are no processRM-related SLURM
+        # jobs in the queue -- otherwise --watch hangs indefinitely on a static
+        # screen once the pipeline finishes.
         try:
             while True:
                 os.system('clear')
                 display_summary(workdir, show_errors=args.errors, verbose=args.verbose)
+                jobs = squeue_for_user()
+                relevant = [
+                    j for j in jobs
+                    if any(k in j['name'].lower()
+                           for k in ('noise', 'rmsy', 'merge', 'cube', 'orchestrate'))
+                ]
+                if not relevant:
+                    print(f"{C.GREY}No active processRM jobs. Exiting --watch.{C.END}")
+                    break
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             print(f"\n{C.GREY}fullSummary stopped.{C.END}")
