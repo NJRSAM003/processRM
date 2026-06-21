@@ -1034,8 +1034,12 @@ NOISEEOF
     echo "[r${RID} Stage 3] RM synthesis array: SLURM job $SLURMID_RMSY ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
     ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
 
-    # Stage 4 (per region): merge-prep dependent on this region's rmsy completing
-    INPUT_CUBE="$FITS_FULL"
+    # Stage 4 (per region): merge-prep dependent on this region's rmsy completing.
+    # The merge step uses the input cube's NAXIS1/NAXIS2 to allocate its output
+    # cubes, so we point it at the per-region CROPPED Stokes Q -- not the full
+    # IQUV cube -- otherwise it allocates 6144x6144 outputs and explodes on
+    # broadcasting the 422-wide chunks into them.
+    INPUT_CUBE="$R_FITS_Q"
     cat > merge_prep.sbatch <<MPEOF
 #!/bin/bash
 #SBATCH --nodes=1

@@ -210,7 +210,14 @@ def discover_regions(workdir):
 
 
 def count_chunked_inputs(workdir):
-    """How many input chunks have been created in processing/."""
+    """How many input chunks have been created in processing/.
+
+    run_parallel_rmsy.py deletes the Q/U chunks once that task's RM-clean
+    finishes (see the 'Cleanup intermediate chunks' block), so a value of
+    0 here doesn't mean chunking failed; it means chunking + rmsynth +
+    rmclean all completed for that task. timings.csv is consulted by the
+    caller to surface the real count when this returns 0.
+    """
     pattern = os.path.join(workdir, 'processing', 'part_*_*stokesQ.fits')
     return len(glob.glob(pattern))
 
@@ -410,7 +417,13 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
     print(f"  {stage_colour('noise')}{bar(noise_done, noise_total, label='Noise map')}"
           f"{' (CANCELLED)' if 'noise' in cancelled else ''}{C.END}")
 
+    timings = read_timings(workdir)
+
+    # Chunks get deleted post-rmclean; fall back to the timings log for the real
+    # count when nothing is on disk.
     chunked = count_chunked_inputs(workdir)
+    if chunked == 0 and 'chunking' in timings:
+        chunked = timings['chunking']['ok'] + timings['chunking']['skipped']
     print(f"  {stage_colour('chunking')}{bar(chunked, total_chunks, label='Chunking')}"
           f"{' (CANCELLED)' if 'chunking' in cancelled else ''}{C.END}")
 
@@ -422,9 +435,26 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
     print(f"  {stage_colour('rmclean')}{bar(rmclean, total_chunks, label='RM Clean')}"
           f"{' (CANCELLED)' if 'rmclean' in cancelled else ''}{C.END}")
 
+    # Merged outputs exist even when merge FAILED (make_empty_image runs first),
+    # so a 15/15 bar can be entirely misleading. Cross-check timings.csv and
+    # paint the bar red when any merge tasks failed.
     merged_count, merged_total, merged_files = count_merged(workdir)
-    print(f"  {stage_colour('merge')}{bar(merged_count, merged_total, label='Merging')}"
-          f"{' (CANCELLED)' if 'merge' in cancelled else ''}{C.END}")
+    merge_fail = timings.get('merge', {}).get('fail', 0)
+    merge_ok = timings.get('merge', {}).get('ok', 0)
+    if merge_fail and merge_ok == 0:
+        merge_colour = C.RED
+        merge_suffix = f' (all {merge_fail} merge tasks FAILED -- outputs are wrong size)'
+    elif merge_fail:
+        merge_colour = C.YELLOW
+        merge_suffix = f' ({merge_fail} merge task(s) failed -- check errors)'
+    elif 'merge' in cancelled:
+        merge_colour = C.YELLOW
+        merge_suffix = ' (CANCELLED)'
+    else:
+        merge_colour = stage_colour('merge')
+        merge_suffix = ''
+    print(f"  {merge_colour}{bar(merged_count, merged_total, label='Merging')}"
+          f"{merge_suffix}{C.END}")
     return merged_files
 
 
