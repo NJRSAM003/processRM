@@ -123,6 +123,33 @@ def _has_beam_info_via_container(container_path, cube_path):
     return json.loads(stdout.strip().splitlines()[-1])
 
 
+def _naxis2_via_container(container_path, cube_path):
+    """Return NAXIS2 (image height in pixels) read inside the container."""
+    code = (
+        "import json\n"
+        "from astropy.io import fits\n"
+        f"print(json.dumps(int(fits.getheader({cube_path!r})['NAXIS2'])))\n"
+    )
+    stdout = _container_python(container_path, code)
+    return json.loads(stdout.strip().splitlines()[-1])
+
+
+def _transpose_cube_via_container(container_path, cube_path):
+    """Run cube_validator.transpose_cube_in_place inside the container.
+
+    Returns True if a transpose actually happened, False otherwise.
+    """
+    code = (
+        "import sys, json\n"
+        f"sys.path.insert(0, {SCRIPT_DIR!r})\n"
+        "import cube_validator\n"
+        f"changed = cube_validator.transpose_cube_in_place({cube_path!r})\n"
+        "print(json.dumps(bool(changed)))\n"
+    )
+    stdout = _container_python(container_path, code, timeout=600)
+    return json.loads(stdout.strip().splitlines()[-1])
+
+
 def _parse_region_via_container(container_path, region_path, cube_path):
     """Re-run region_parser.parse_region_file inside the container.
 
@@ -702,18 +729,22 @@ def _check_beam_for_sigma(cube_path, taskvals, config_path, hard, rm_container_p
 
 
 def _preview_chunk_geometry(args, fits_full, workdir, taskvals):
-    """Read NAXIS2 from the input cube and log how it will be split."""
-    try:
-        from astropy.io import fits
-    except ImportError:
-        return
+    """Read NAXIS2 from the input cube and log how it will be split.
+
+    Runs the read inside the rm-env container so the preview works on the
+    login node too.
+    """
     if not fits_full or not os.path.exists(fits_full):
         return
-    sample_path = fits_full
+    naxis2 = None
     try:
-        naxis2 = fits.getheader(sample_path)['NAXIS2']
+        from astropy.io import fits
+        naxis2 = int(fits.getheader(fits_full)['NAXIS2'])
     except Exception:
-        return
+        try:
+            naxis2 = _naxis2_via_container(_resolve_rm_container_path(args), fits_full)
+        except (FileNotFoundError, RuntimeError):
+            return  # silently skip if neither path works -- chunk preview is non-essential
 
     parallel = int(taskvals.get('chunking', {}).get('parallel', 100))
     chunks = int(args.chunks) if args.chunks else \
@@ -1391,21 +1422,45 @@ def materialize_workdir_from_config(config_path, workdir):
 
     # ---- Re-run cube/freqlist validation against the now-symlinked files ----
     # The user may have edited the config after BUILD, so verify the live state.
-    # Also auto-transpose the symlinked cube if axes are (RA,DEC,STOKES,FREQ).
-    data_now, _ = config_parser.parse_config(config_path)
-    data_now = data_now.get('data', {})
+    # All FITS-touching work runs inside the rm-env container.
+    all_now, _ = config_parser.parse_config(config_path)
+    data_now = all_now.get('data', {})
     primary_basename = (data_now.get('fits_full') or '').strip()
     freqlist_basename = (data_now.get('freqlist') or '').strip()
+    rm_container_now = (all_now.get('slurm', {}).get('rm_container') or '').strip() \
+                       or os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
+
     if primary_basename and freqlist_basename:
         primary_path = os.path.join(workdir, primary_basename)
         freqlist_path = os.path.join(workdir, freqlist_basename)
+        info = None
         try:
             info = cube_validator.validate_freqlist_against_cube(primary_path, freqlist_path)
         except cube_validator.CubeStructureError as e:
-            logger.error(str(e))
-            cleanup_run_artifacts(workdir, keep_config=config_path)
-            sys.exit(1)
-        if info['needs_transpose']:
+            if 'astropy is required' in str(e):
+                # Fall back to the container
+                try:
+                    info = _validate_cube_via_container(
+                        rm_container_now, primary_path, freqlist_path
+                    )
+                except FileNotFoundError as fe:
+                    logger.error(f"Cannot validate cube: container not found at {fe}. "
+                                 "Run setup.sh to fetch it.")
+                    cleanup_run_artifacts(workdir, keep_config=config_path)
+                    sys.exit(1)
+                except RuntimeError as re_err:
+                    logger.error(f"Cube validation failed inside the container: {re_err}")
+                    cleanup_run_artifacts(workdir, keep_config=config_path)
+                    sys.exit(1)
+                except cube_validator.CubeStructureError as ce:
+                    logger.error(str(ce))
+                    cleanup_run_artifacts(workdir, keep_config=config_path)
+                    sys.exit(1)
+            else:
+                logger.error(str(e))
+                cleanup_run_artifacts(workdir, keep_config=config_path)
+                sys.exit(1)
+        if info and info.get('needs_transpose'):
             logger.warning(
                 f"  -> auto-transposing axes (RA,DEC,STOKES,FREQ) -> (RA,DEC,FREQ,STOKES) "
                 f"on a local copy of: {primary_basename}"
@@ -1417,7 +1472,10 @@ def materialize_workdir_from_config(config_path, workdir):
                     source = os.path.realpath(primary_path)
                     os.unlink(primary_path)
                     shutil.copy2(source, primary_path)
-                cube_validator.transpose_cube_in_place(primary_path, info)
+                try:
+                    cube_validator.transpose_cube_in_place(primary_path, info)
+                except (ImportError, ModuleNotFoundError):
+                    _transpose_cube_via_container(rm_container_now, primary_path)
             except Exception as e:
                 logger.error(f"Auto-transpose failed: {e}")
                 cleanup_run_artifacts(workdir, keep_config=config_path)
@@ -1426,11 +1484,7 @@ def materialize_workdir_from_config(config_path, workdir):
         # Hard beam-info gate: if the (possibly user-edited) config still asks
         # for sigma cleaning and the cube has no beam metadata, refuse to
         # submit; the noise stage would crash inside SLURM.
-        taskvals_now, _ = config_parser.parse_config(config_path)
-        rm_container_now = (
-            taskvals_now.get('slurm', {}).get('rm_container') or ''
-        ).strip() or os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
-        _check_beam_for_sigma(primary_path, taskvals_now, config_path, hard=True,
+        _check_beam_for_sigma(primary_path, all_now, config_path, hard=True,
                               rm_container_path=rm_container_now)
 
     # Subdirectories — only now that we know we will actually run
@@ -1447,22 +1501,39 @@ def materialize_workdir_from_config(config_path, workdir):
     # ---- Parse the region file (now that the cube and region file both
     # live in workdir) so the orchestrator script can bake in one entry
     # per region. If region_file is empty, regions=[] -> single-cube flow.
+    # World-coord regions need the cube's WCS, so the parse runs inside the
+    # container.
     regions = []
     region_file_basename = (data_now.get('region_file') or '').strip()
     if region_file_basename and primary_basename:
+        region_full = os.path.join(workdir, region_file_basename)
+        cube_full = os.path.join(workdir, primary_basename)
+        wcs_header = None
         try:
             from astropy.io import fits as _fits
-            wcs_header = _fits.getheader(os.path.join(workdir, primary_basename))
+            wcs_header = _fits.getheader(cube_full)
         except Exception:
-            wcs_header = None
+            pass
         try:
-            regions = region_parser.parse_region_file(
-                os.path.join(workdir, region_file_basename), wcs_header
-            )
+            regions = region_parser.parse_region_file(region_full, wcs_header)
         except region_parser.RegionParseError as e:
-            logger.error(f"Region file '{region_file_basename}': {e}")
-            cleanup_run_artifacts(workdir, keep_config=config_path)
-            sys.exit(1)
+            if 'no cube WCS was supplied' in str(e):
+                try:
+                    regions = _parse_region_via_container(
+                        rm_container_now, region_full, cube_full
+                    )
+                except FileNotFoundError as fe:
+                    logger.error(f"Cannot parse region file: container not found at {fe}.")
+                    cleanup_run_artifacts(workdir, keep_config=config_path)
+                    sys.exit(1)
+                except RuntimeError as re_err:
+                    logger.error(f"Region parsing failed inside the container: {re_err}")
+                    cleanup_run_artifacts(workdir, keep_config=config_path)
+                    sys.exit(1)
+            else:
+                logger.error(f"Region file '{region_file_basename}': {e}")
+                cleanup_run_artifacts(workdir, keep_config=config_path)
+                sys.exit(1)
         logger.info(f"will run {len(regions)} region(s):")
         for line in region_parser.describe_regions(regions):
             logger.info(f"  -> {line}")
