@@ -65,12 +65,22 @@ def _resolve_rm_container_path(args):
     return os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
 
 
+class _LoginNodeUnsupported(RuntimeError):
+    """singularity exec itself failed because the kernel won't grant user
+    namespace mappings on this node. Almost always means the user is on an
+    ilifu login node and needs a compute session for strict BUILD validation."""
+
+
 def _container_python(container_path, code, timeout=180):
     """Run a Python snippet inside the rm-env container; return stdout (str).
 
-    Raises ``FileNotFoundError`` if ``container_path`` doesn't exist (no .sif
-    yet -- the user hasn't run setup.sh) and ``RuntimeError`` if singularity
-    itself fails or the snippet exits non-zero.
+    Raises:
+      FileNotFoundError       -- container_path doesn't exist (user hasn't run
+                                 setup.sh) or singularity binary missing.
+      _LoginNodeUnsupported   -- singularity exec itself can't run here, e.g.
+                                 'setgroups: Permission denied' or 'user
+                                 namespace mappings' on an ilifu login node.
+      RuntimeError            -- any other non-zero exit from the snippet.
     """
     if not os.path.exists(container_path):
         raise FileNotFoundError(container_path)
@@ -82,7 +92,16 @@ def _container_python(container_path, code, timeout=180):
     except FileNotFoundError:
         raise FileNotFoundError("singularity binary not on PATH")
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or 'singularity exec failed').strip())
+        err = (result.stderr or result.stdout or 'singularity exec failed').strip()
+        if 'setgroups' in err or 'user namespace mappings' in err:
+            raise _LoginNodeUnsupported(
+                "singularity exec can't run on this node (no user-namespace "
+                "mapping). This is normal on ilifu login nodes. Grab a compute "
+                "session (e.g. `small-sesh`) and re-run if you want strict "
+                "BUILD-time validation; otherwise RUN will validate on a "
+                "compute node."
+            )
+        raise RuntimeError(err)
     return result.stdout
 
 
@@ -534,6 +553,8 @@ def build_config_from_args(args, workdir):
                 logger.warning(f"  -> skipping BUILD-time cube validation: container "
                                f"not found at {fe}. Run setup.sh to fetch it. "
                                f"RUN will validate.")
+            except _LoginNodeUnsupported as e:
+                logger.warning(f"  -> skipping BUILD-time cube validation: {e}")
             except RuntimeError as re_err:
                 logger.warning(f"  -> cube validation failed inside the container: "
                                f"{re_err}. RUN will retry.")
@@ -584,6 +605,8 @@ def build_config_from_args(args, workdir):
                 except FileNotFoundError as fe:
                     logger.warning(f"  -> skipping BUILD-time region preview: container "
                                    f"not found at {fe}. RUN will parse.")
+                except _LoginNodeUnsupported as e:
+                    logger.warning(f"  -> skipping BUILD-time region preview: {e}")
                 except RuntimeError as re_err:
                     logger.warning(f"  -> region parsing failed inside the container: "
                                    f"{re_err}. RUN will retry.")
@@ -690,6 +713,11 @@ def _check_beam_for_sigma(cube_path, taskvals, config_path, hard, rm_container_p
         else:
             try:
                 beam = _has_beam_info_via_container(rm_container_path, cube_path)
+            except _LoginNodeUnsupported as e:
+                if not hard:
+                    logger.warning(f"  -> skipping BUILD-time beam-info check: {e}")
+                    return True
+                raise
             except (FileNotFoundError, RuntimeError) as e:
                 if not hard:
                     logger.warning(f"  -> skipping BUILD-time beam-info check: "
