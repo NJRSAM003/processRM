@@ -145,10 +145,13 @@ def fill_cube_with_images(outputName, listing_all_parts, initial_fits_header):
         y, x = data_sub_image.shape[-2:]
 
         print(y+y_height, y)
-        try:
-            dataCubeOutput[:, :, y_height:y+y_height, :] = data_sub_image[:, :, :, :]
-        except:
-            dataCubeOutput[:, y_height:y+y_height, :] = data_sub_image[:, :, :]
+        # [CHANGE 2026-06-21]: handle all rmsynth3d output ranks uniformly.
+        # FDF_*_tot / RMSF_tot come out 4D (1, NPHI, NY, NX); FDF_maxPI,
+        # FDF_peakRM, RMSF_FWHM come out 2D (NY, NX). The old try/except
+        # ladder only had 4D and 3D paths, so 2D outputs crashed with
+        # 'too many indices'. An ellipsis slice on the (always 4D) output
+        # broadcasts cleanly against 2D / 3D / 4D sources alike.
+        dataCubeOutput[..., y_height:y+y_height, :] = data_sub_image
 
         y_height += y
         hud_sub_image_input.close()
