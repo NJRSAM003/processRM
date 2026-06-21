@@ -424,11 +424,15 @@ def build_config_from_args(args, workdir):
     # needs per-channel BMAJ/BMIN/BPA in the cube header OR a CASA-style
     # BEAMS table. If neither is present, refuse to build a config that
     # will fail at the make_noise stage.
+    # We read from DEFAULT_CONFIG here (the template that's about to be
+    # copied to the user's workdir) because the workdir config hasn't been
+    # parsed yet at this point in BUILD.
+    _defaults, _ = config_parser.parse_config(DEFAULT_CONFIG)
     try:
-        cfg_threshold = float(taskvals.get('rmclean', {}).get('threshold', -5))
+        cfg_threshold = float(_defaults.get('rmclean', {}).get('threshold', -5))
     except (TypeError, ValueError):
         cfg_threshold = -5.0
-    cfg_noise_map = (taskvals.get('noise', {}).get('noise_map') or '').strip()
+    cfg_noise_map = (_defaults.get('noise', {}).get('noise_map') or '').strip()
     if cfg_threshold < 0 and not cfg_noise_map:
         beam = cube_validator.has_beam_info(primary_cube)
         if beam is None:
