@@ -75,7 +75,11 @@ From: python:3.11-slim
     # Everything goes into the system Python 3.11 (from the base image).
     # PyBDSF ships source on PyPI and builds against gfortran + boost (both
     # installed via apt above), so a plain `pip install bdsf` works.
-    pip install --no-cache-dir --upgrade pip setuptools wheel
+    #
+    # setuptools is pinned <80 because setuptools 80+ removed `pkg_resources`
+    # and RM-Tools-sigma's RMtools_3D/__init__.py still imports it. Once the
+    # upstream fork drops that import we can lift the pin.
+    pip install --no-cache-dir --upgrade pip wheel "setuptools<80"
     pip install --no-cache-dir \
         "numpy>=1.21,<2.0" \
         "scipy>=1.7" \
