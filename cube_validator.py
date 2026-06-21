@@ -121,6 +121,41 @@ def validate_cube_structure(path):
     }
 
 
+def has_beam_info(path):
+    """Return how beam info is carried in a FITS cube, or None.
+
+    The PyBDSF-driven noise-map step (RM-Tools-sigma's make_noise_map) needs
+    per-channel BMAJ/BMIN/BPA. The two acceptable sources, in priority order:
+
+      'header'      -- BMAJ, BMIN, BPA in the primary HDU header
+      'casa_beams'  -- a CASA-style BEAMS table HDU (per-channel beam params)
+
+    Returns one of the strings above, or None if neither is present. Use this
+    to decide whether the sigma-cleaning path can run; if it returns None, the
+    caller should refuse to submit the noise stage and tell the user to either
+    switch to an absolute threshold (positive `[rmclean] threshold`) or re-image
+    with beam metadata retained.
+    """
+    try:
+        from astropy.io import fits
+    except ImportError:
+        return None
+    if not os.path.exists(path):
+        return None
+    try:
+        with fits.open(path) as hdul:
+            hdr = hdul[0].header
+            if all(k in hdr for k in ('BMAJ', 'BMIN', 'BPA')):
+                return 'header'
+            for hdu in hdul[1:]:
+                name = (getattr(hdu, 'name', '') or '').upper()
+                if name in ('BEAMS', 'CASA_BEAMS'):
+                    return 'casa_beams'
+    except OSError:
+        return None
+    return None
+
+
 def count_freqlist_lines(freqlist_path):
     """Count non-blank non-comment lines in the freqlist .txt."""
     if not os.path.exists(freqlist_path):

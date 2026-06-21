@@ -120,7 +120,7 @@ def validate_config(filename):
     """
     taskvals, config = parse_config(filename)
 
-    required_sections = ['data', 'chunking', 'rmsynth', 'rmclean', 'slurm', 'merge', 'run']
+    required_sections = ['data', 'chunking', 'rmsynth', 'rmclean', 'noise', 'slurm', 'merge', 'run']
     for sec in required_sections:
         if sec not in taskvals:
             raise ValueError(f"Config file missing required section: [{sec}]")

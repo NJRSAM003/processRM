@@ -1,0 +1,131 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+# ==================================================================
+#  RM-env Singularity Container for processRM
+# ==================================================================
+#
+# Contains:
+#   - RM-Tools-sigma  (rmsynth3d, rmclean3d, RMtools_3D.make_noise_map)
+#       the CIRADA RM-Tools fork with a 2D per-pixel sigma-cutoff path
+#       and the PyBDSF-driven noise-map generator.
+#   - PyBDSF (bdsf)   required by RMtools_3D.make_noise_map.
+#       Installed via micromamba into /opt/conda so the Fortran/Boost
+#       extensions are isolated from the host system.
+#   - numpy, scipy, astropy, matplotlib, h5py, click (pulled by sigma)
+#   - fits2idia       FITS -> HDF5 conversion for CARTA-friendly output.
+#
+# Build instructions:
+#   # The %files section copies RM-Tools-sigma into the image at build time.
+#   # Default expects the source at ~/Downloads/RM-Tools-sigma; edit %files
+#   # if yours lives elsewhere.
+#   singularity build --fakeroot rm-env.sif rm-env.def
+#
+# OR remote build via Sylabs:
+#   singularity build --remote rm-env.sif rm-env.def
+# ==================================================================
+
+%labels
+    Version 2.0-sigma
+    Description "RM-Tools-sigma + PyBDSF container for processRM"
+    Platform ilifu
+
+%files
+    # Local source of RM-Tools-sigma is staged into the image at build time.
+    ~/Downloads/RM-Tools-sigma /opt/RM-Tools-sigma
+
+%post
+    set -e
+
+    # ---- System packages -------------------------------------------------
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        wget \
+        curl \
+        gfortran \
+        libfftw3-dev \
+        libhdf5-dev \
+        libboost-python-dev \
+        libboost-numpy-dev \
+        bzip2 \
+        ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+    # ---- micromamba + bdsf (PyBDSF) --------------------------------------
+    # PyBDSF is awkward to pip-install (compiled Fortran + boost::python),
+    # so we grab a micromamba binary and use it to install bdsf from
+    # conda-forge into /opt/conda. Everything Python below then runs from
+    # /opt/conda/bin/python, so make_noise_map.py (which imports bdsf) and
+    # rmsynth3d/rmclean3d share the same interpreter and site-packages.
+    mkdir -p /opt/conda
+    wget -qO /tmp/micromamba.tar.bz2 \
+        https://micro.mamba.pm/api/micromamba/linux-64/latest
+    tar -xjf /tmp/micromamba.tar.bz2 -C /opt --strip-components=1 bin/micromamba
+    rm /tmp/micromamba.tar.bz2
+
+    /opt/micromamba install -y -p /opt/conda -c conda-forge \
+        python=3.11 \
+        bdsf
+
+    # ---- RM-Tools-sigma + scientific stack (into the same conda env) -----
+    /opt/conda/bin/pip install --no-cache-dir --upgrade pip setuptools wheel
+    /opt/conda/bin/pip install --no-cache-dir \
+        "numpy>=1.21,<2.0" \
+        "scipy>=1.7" \
+        "astropy>=5.0" \
+        "matplotlib>=3.5" \
+        "h5py>=3.0" \
+        "click>=8.0"
+
+    # Editable install of the sigma fork so RMtools_3D.make_noise_map and
+    # the rmsynth3d / rmclean3d console scripts all resolve from /opt.
+    /opt/conda/bin/pip install --no-cache-dir -e /opt/RM-Tools-sigma
+
+    # ---- fits2idia (CARTAvis) for the merge stage's HDF5 conversion ------
+    apt-get update && apt-get install -y --no-install-recommends \
+        cmake \
+        libcfitsio-dev \
+        zlib1g-dev \
+        && rm -rf /var/lib/apt/lists/*
+    git clone https://github.com/CARTAvis/fits2idia.git /tmp/fits2idia
+    cd /tmp/fits2idia && mkdir build && cd build && cmake .. && make -j4 && make install
+    cd / && rm -rf /tmp/fits2idia
+
+    # ---- Sanity checks ---------------------------------------------------
+    /opt/conda/bin/rmsynth3d --help > /dev/null
+    /opt/conda/bin/rmclean3d --help > /dev/null
+    /opt/conda/bin/python -m RMtools_3D.make_noise_map --help > /dev/null
+    /opt/conda/bin/python -c "import bdsf, astropy, numpy, scipy"
+    which fits2idia
+
+    cat > /opt/rm-env-info.txt <<EOF
+RM-env-sigma Singularity Container
+==================================
+Built for processRM pipeline (RM-Tools-sigma fork)
+Contains:
+  - Python 3.11 (/opt/conda)
+  - RM-Tools-sigma : rmsynth3d, rmclean3d, RMtools_3D.make_noise_map
+  - PyBDSF (bdsf)  : noise-map generator dependency
+  - numpy, scipy, astropy, matplotlib, h5py, click
+  - fits2idia      : FITS -> HDF5 for CARTA
+EOF
+
+%environment
+    export LC_ALL=C
+    # Conda env first on PATH so rmsynth3d / rmclean3d / python all resolve
+    # to the binaries we installed.
+    export PATH="/opt/conda/bin:/usr/local/bin:$PATH"
+    export PYTHONNOUSERSITE=1
+    export MPLBACKEND=Agg
+
+%runscript
+    echo "rm-env-sigma container for processRM"
+    echo "Usage: singularity exec rm-env.sif <command>"
+    exec "$@"
+
+%test
+    rmsynth3d --help > /dev/null 2>&1 && echo "rmsynth3d: OK" || echo "rmsynth3d: FAILED"
+    rmclean3d --help > /dev/null 2>&1 && echo "rmclean3d: OK" || echo "rmclean3d: FAILED"
+    python -m RMtools_3D.make_noise_map --help > /dev/null 2>&1 && echo "make_noise_map: OK" || echo "make_noise_map: FAILED"
+    python -c "import bdsf, astropy, numpy, scipy" 2>&1 && echo "Python stack: OK"

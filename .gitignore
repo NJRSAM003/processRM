@@ -7,10 +7,9 @@ __pycache__/
 .Python
 *.so
 
-# Container artifacts and recipe (maintainer-only files)
+# Container binary artifacts (distributed via GitHub Releases, not git)
 container/*.sif
 container/*.simg
-container/*.def
 
 # Pipeline-generated outputs (never commit run artifacts)
 processing/

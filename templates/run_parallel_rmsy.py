@@ -71,6 +71,19 @@ def run_rmsy_job(args):
         imsubimage(imagename=f"{inputFits}", outfile=f"processing/{outfile}.im", region=reg)
         exportfits(imagename=f"processing/{outfile}.im", fitsimage=f"processing/{outfile}".replace(".im",""))
 
+    # [CHANGE 2026-06-21]: Per-chunk slice of the 2D noise map for sigma cleaning.
+    # The 2D noise map shares the (x, y) grid of the region's Stokes Q/U cubes.
+    # We slice the same y-range so rmsynth3d -N receives a sub-map matching the
+    # Q/U chunk it's working on. CASA imsubimage handles the 2D case cleanly.
+    if getattr(args, 'noiseMap', '') and os.path.exists(args.noiseMap):
+        nm_reg = f"box[[0pix,{y2}pix],[{xmax}pix,{y1}pix]]"
+        nm_out = f"part_{args.slurmArrayTaskId}_noise_map"
+        if not os.path.exists(f"processing/{nm_out}.fits"):
+            imsubimage(imagename=args.noiseMap,
+                       outfile=f"processing/{nm_out}.im", region=nm_reg)
+            exportfits(imagename=f"processing/{nm_out}.im",
+                       fitsimage=f"processing/{nm_out}.fits")
+
 #        try:
 #            command = f'singularity --quiet exec /idia/software/containers/rm-csromer.sif /users/lennart/venv/bin/rmsynth3d {c.inputFitsStokesQ} {c.inputFitsStokesU} {c.freqList} -o part_{c.slurmArrayTaskId}_ && '
 #            command += f'/users/lennart/venv/bin/rmclean3d -c {c.rmsyCleanThrethold} -n {c.rmsyCleanIterations} part_{c.slurmArrayTaskId}_FDF_tot_dirty.fits part_{c.slurmArrayTaskId}_RMSF_tot.fits'
@@ -105,6 +118,21 @@ def write_sbatch_file(args):
     # MaxArrayTasksPerJob) with 'Invalid job array specification'. Without the
     # cap, SLURM applies its own cluster-wide limit, which is what we want
     # anyway - the user shouldn't need to second-guess the scheduler.
+    # [CHANGE 2026-06-21]: Sigma cleaning support.
+    # - threshold < 0 means "N-sigma per pixel" and REQUIRES the noise map.
+    #   rmsynth3d -N writes FDF_noise_th.fits per chunk; rmclean3d -N reads
+    #   that same file to convert -c -<N> into an absolute per-pixel cutoff.
+    # - threshold > 0 means "absolute Jy/beam/RMSF": we skip -N entirely so
+    #   the pipeline still works on cubes without beam info / PyBDSF.
+    use_sigma = args.rmsyCleanThrethold < 0 and bool(getattr(args, 'noiseMap', ''))
+    rmsynth_n_flag = f'-N "processing/part_${{TASKID}}_noise_map.fits"' if use_sigma else ''
+    rmclean_n_flag = f'-N "processing/part_${{TASKID}}_FDF_noise_th.fits"' if use_sigma else ''
+    # Window cleaning is optional and rarely useful; only emit -w if the user
+    # set a non-zero window in the config.
+    if args.rmsyCleanWindow != 0:
+        rmclean_w_flag = f'-w {args.rmsyCleanWindow}'
+    else:
+        rmclean_w_flag = ''
     sbatch_content = f'''#!/bin/bash
 #SBATCH --array=1-{args.parallel}
 #SBATCH --nodes=1
@@ -149,7 +177,7 @@ if [ -f "$Q_CHUNK" ] && [ -f "$U_CHUNK" ]; then
 else
     echo "[Stage 1] Chunking inputs for task $TASKID"
     t0=$SECONDS
-    singularity --quiet exec {args.casaContainer} python3 {__file__} --parallel {args.parallel} --slurmArrayTaskId ${{TASKID}} --inputFitsStokesQ {args.inputFitsStokesQ} --inputFitsStokesU {args.inputFitsStokesU} --freqList {args.freqList} --casaContainer {args.casaContainer} --rmContainer {args.rmContainer}
+    singularity --quiet exec {args.casaContainer} python3 {__file__} --parallel {args.parallel} --slurmArrayTaskId ${{TASKID}} --inputFitsStokesQ {args.inputFitsStokesQ} --inputFitsStokesU {args.inputFitsStokesU} --freqList {args.freqList} --casaContainer {args.casaContainer} --rmContainer {args.rmContainer} --noiseMap "{args.noiseMap}"
     rc=$?
     log_stage "chunking" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -161,7 +189,7 @@ if [ -f "$FDF_DIRTY" ]; then
 else
     echo "[Stage 2] Running rmsynth3d for task $TASKID"
     t0=$SECONDS
-    singularity --quiet exec {args.rmContainer} rmsynth3d -l 1000 "$Q_CHUNK" "$U_CHUNK" {args.freqList} -o part_${{TASKID}}_
+    singularity --quiet exec {args.rmContainer} rmsynth3d -l 1000 "$Q_CHUNK" "$U_CHUNK" {args.freqList} {rmsynth_n_flag} -o part_${{TASKID}}_
     rc=$?
     log_stage "rmsynth" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -173,7 +201,7 @@ if [ -f "$FDF_CLEAN" ]; then
 else
     echo "[Stage 3] Running rmclean3d for task $TASKID"
     t0=$SECONDS
-    singularity --quiet exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {('-w ' + str(args.rmsyCleanWindow)) if args.rmsyCleanWindow > 0 else ''} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
+    singularity --quiet exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {rmclean_w_flag} {rmclean_n_flag} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
     rc=$?
     log_stage "rmclean" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -283,6 +311,11 @@ Examples:
                         help='Optional suffix appended to the SLURM job name and log filenames '
                              '(used by the per-region orchestrator to distinguish regions, '
                              'e.g. "_r1", "_r2"). Empty by default.')
+    parser.add_argument('--noiseMap', default='',
+                        help='Path to the 2D per-pixel noise map (output of '
+                             'RMtools_3D.make_noise_map). Empty = run rmsynth3d/rmclean3d in '
+                             'absolute-threshold mode (no -N). Required for sigma cleaning '
+                             '(negative --rmsyCleanThrethold).')
     parser.add_argument('--start', action='store_true',
                         help='Submit the sbatch job to SLURM')
 

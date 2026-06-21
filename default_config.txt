@@ -1,16 +1,18 @@
 # ----------------------------------------------------------------------
-# processRM default configuration
+# processRM default configuration  (RM-Tools-sigma backend)
 #
-# These defaults assume you want CLEAN FDF cubes ready for CARTA:
-#   1. Extract Stokes Q/U   (or use already-split cubes)
-#   2. rmsynth3d            -> dirty FDF + RMSF + (RMSF FWHM map)
-#   3. rmclean3d            -> CLEAN FDF cubes
-#   4. Merge chunks         -> full-size FITS cubes
-#   5. fits2idia            -> HDF5 cubes, openable in CARTA
+# These defaults give you CLEAN FDF cubes ready for CARTA, cleaned to a
+# spatially-varying per-pixel sigma threshold:
+#   1. Extract Stokes I/Q/U from the full IQUV input cube
+#   2. make_noise_map         -> 2D per-pixel noise map (PyBDSF on Stokes I)
+#   3. rmsynth3d -N           -> dirty FDF + RMSF + FDF_noise_th map
+#   4. rmclean3d -c -5 -N     -> CLEAN FDFs using cutoff = 5 * noise(y,x)
+#   5. Merge chunks           -> full-size FITS cubes
+#   6. fits2idia              -> HDF5 cubes, openable in CARTA
 #
 # Leave the defaults if that workflow is what you want. Tweak individual
-# parameters only if you have a reason — every flag below corresponds to
-# an rmsynth3d / rmclean3d option (see comments).
+# parameters only if you have a reason -- every flag below corresponds to
+# an rmsynth3d / rmclean3d / make_noise_map option (see comments).
 # ----------------------------------------------------------------------
 
 [data]
@@ -37,12 +39,19 @@ super_resolution = False          # -r: Rudnick & Cotton mode (sharper phi, bigg
 
 # Full help:  singularity exec ~/processRM/container/rm-env.sif rmclean3d --help
 [rmclean]
-threshold = 0.0000010             # -c CUTOFF: positive = Jy/beam/RMSF, negative = N-sigma (e.g. -5 for 5-sigma)
+threshold = -5                    # -c CUTOFF: negative = N-sigma per-pixel (needs the noise map; default 5-sigma). Positive = absolute Jy/beam/RMSF (no noise map needed).
 iterations = 5000                 # -n MAXITER: max iterations per pixel (raise to 100000 for science-grade deep clean)
 gain = 0.1                        # -g GAIN: CLEAN loop gain (rmclean3d default; lower = safer, slower)
-window = 0                        # -w WINDOW: deeper masked-clean threshold in Jy/beam/RMSF; 0 = single-pass clean (no second pass)
+window = 0                        # -w WINDOW: OPTIONAL second-pass masked-clean threshold. 0 = disabled (recommended). Experimental: in testing it didn't add much beyond the main clean. Same sign convention as `threshold` (negative = N-sigma, positive = absolute Jy/beam/RMSF).
 ncores = 1                        # --ncores: multiprocessing per task (also bump slurm.cpus_per_task)
 internal_chunk = ''               # --chunk: pixels per multiprocessing batch (only if ncores > 1)
+
+# Per-pixel noise map for sigma cleaning. The pipeline generates one per region
+# by running PyBDSF on the cropped Stokes I cube; rmsynth3d -N consumes it to
+# write FDF_noise_th.fits, which rmclean3d -N then uses for the cutoff/window.
+# Required when [rmclean] threshold is negative (sigma mode). Ignored otherwise.
+[noise]
+noise_map = ''                    # Optional path to a pre-computed 2D FITS noise map. Empty = auto-generate via PyBDSF.
 
 # Full help:  processRM --help
 [slurm]

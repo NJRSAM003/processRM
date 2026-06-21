@@ -419,6 +419,39 @@ def build_config_from_args(args, workdir):
                 "The original file on /idia/ or /users/ is NOT modified."
             )
 
+    # ---- Beam-info check for sigma cleaning ----
+    # Sigma cleaning (negative [rmclean] threshold) requires PyBDSF, which
+    # needs per-channel BMAJ/BMIN/BPA in the cube header OR a CASA-style
+    # BEAMS table. If neither is present, refuse to build a config that
+    # will fail at the make_noise stage.
+    try:
+        cfg_threshold = float(taskvals.get('rmclean', {}).get('threshold', -5))
+    except (TypeError, ValueError):
+        cfg_threshold = -5.0
+    cfg_noise_map = (taskvals.get('noise', {}).get('noise_map') or '').strip()
+    if cfg_threshold < 0 and not cfg_noise_map:
+        beam = cube_validator.has_beam_info(primary_cube)
+        if beam is None:
+            logger.error("=" * 60)
+            logger.error("Sigma cleaning requested but cube has no beam metadata")
+            logger.error("=" * 60)
+            logger.error(f"  cube:      {primary_cube}")
+            logger.error(f"  threshold: {cfg_threshold}  (negative => N-sigma per pixel)")
+            logger.error("")
+            logger.error("PyBDSF (used to build the noise map) needs either:")
+            logger.error("  - BMAJ/BMIN/BPA in the primary FITS header, or")
+            logger.error("  - a CASA-style BEAMS table HDU (per-channel beam parameters)")
+            logger.error("Neither was found.")
+            logger.error("")
+            logger.error("Pick one to proceed:")
+            logger.error("  1. Re-image the cube so it retains beam metadata, then re-run.")
+            logger.error("  2. Switch to an absolute cutoff by editing the config:")
+            logger.error("       [rmclean] threshold = 0.0000010   # positive = Jy/beam/RMSF")
+            logger.error("  3. Pre-compute a 2D noise map yourself and point at it via:")
+            logger.error("       [noise] noise_map = '/path/to/noise_map.fits'")
+            sys.exit(1)
+        logger.info(f"beam info OK ({beam}); sigma cleaning will use a PyBDSF noise map.")
+
     # ---- Region file: parse + preview if provided ----
     # Same soft-degrade rule as cube validation: if astropy isn't on the login
     # node, we skip the preview for world-coord region files and let RUN mode
@@ -541,14 +574,52 @@ def _preview_chunk_geometry(args, fits_full, workdir, taskvals):
 _SINGLE_CUBE_BODY = r"""
 # ---- SINGLE-CUBE FLOW (no region file in config) ----
 
-# Stage 1: Extract Stokes Q and U from the full IQUV input cube
-echo "[Stage 1] Extracting Stokes Q/U from full IQUV cube..."
+# Stage 1: Extract Stokes I, Q, and U from the full IQUV input cube
+echo "[Stage 1] Extracting Stokes I/Q/U from full IQUV cube..."
 singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
 BASENAME=$(basename "$FITS_FULL" .fits)
 FITS_Q="${BASENAME}.stokesQ.fits"
 FITS_U="${BASENAME}.stokesU.fits"
+FITS_I="${BASENAME}.stokesI.fits"
 echo "  -> Created: $FITS_Q"
 echo "  -> Created: $FITS_U"
+echo "  -> Created: $FITS_I"
+
+# Stage 1.5: Per-pixel noise map (PyBDSF on Stokes I).
+# Skip when [rmclean] threshold is positive (absolute mode) or when the user
+# supplied a pre-computed noise map in [noise] noise_map.
+NOISE_MAP="noise_map.fits"
+SLURMID_NOISE=""
+if [ -n "$NOISE_MAP_CFG" ]; then
+    echo "[Stage 1.5] Using pre-supplied noise map from config: $NOISE_MAP_CFG"
+    NOISE_MAP="$NOISE_MAP_CFG"
+elif awk "BEGIN{exit !($THRESHOLD < 0)}"; then
+    echo "[Stage 1.5] Submitting make_noise.sbatch (sigma mode, threshold=$THRESHOLD)..."
+    cat > make_noise.sbatch <<NOISEEOF
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=10GB
+#SBATCH --job-name=noise
+#SBATCH --output=logs/noise-%j.out
+#SBATCH --error=logs/noise-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=10:00:00
+#SBATCH --account=$ACCOUNT
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+cd "$WORKDIR"
+singularity --quiet exec "$RM_CONTAINER" python -m RMtools_3D.make_noise_map \
+    "$FITS_I" -o "$NOISE_MAP" -B "$FITS_FULL" -v
+NOISEEOF
+    SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
+    echo "  -> Noise-map job: SLURM $SLURMID_NOISE"
+else
+    echo "[Stage 1.5] Absolute-threshold mode (threshold=$THRESHOLD); skipping noise stage."
+    NOISE_MAP=""
+fi
 
 # Stage 2: Generate the RM synthesis array sbatch
 echo ""
@@ -564,13 +635,16 @@ singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parall
     --account "$ACCOUNT" \
     --casaContainer "$CASA_CONTAINER" \
     --rmContainer "$RM_CONTAINER" \
+    --noiseMap "$NOISE_MAP" \
     --createSbatch
 
-# Stage 3: Submit the RM synthesis array job
+# Stage 3: Submit the RM synthesis array job (depends on noise stage if any)
 echo ""
 echo "[Stage 3] Submitting RM synthesis array job..."
-SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | awk '{print $4}')
-echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY"
+DEP_RMSY=""
+[ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE"
+SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
 
 # Stage 4: Write a merge-prep SLURM job that depends on Stage 3 finishing.
 echo ""
@@ -633,9 +707,10 @@ scancel \$IDS
 EOF
     chmod +x "$script"
 }
+write_kill "killJobs_noise"         "$SLURMID_NOISE" "noise-map (PyBDSF)"
 write_kill "killJobs_rmsynth_clean" "$SLURMID_RMSY" "RM synthesis + clean array"
 write_kill "killJobs_merge"         "$SLURMID_MERGE" "merge"
-write_kill "killJobs"               "$SLURM_JOB_ID $SLURMID_RMSY $SLURMID_MERGE" "all processRM stages"
+write_kill "killJobs"               "$SLURM_JOB_ID $SLURMID_NOISE $SLURMID_RMSY $SLURMID_MERGE" "all processRM stages"
 
 echo ""
 echo "===================================="
@@ -670,6 +745,7 @@ REGION_IDS=(""" + ids + r""")
 REGION_CROPS=(""" + crops + r""")
 REGION_POINTS=(""" + points + r""")
 
+ALL_NOISE_IDS=""
 ALL_RMSY_IDS=""
 ALL_MERGEPREP_IDS=""
 
@@ -697,13 +773,49 @@ for i in "${!REGION_IDS[@]}"; do
         [ -f "../$s" ] && ln -sf "../$s" "$s"
     done
 
-    # Stage 1 (per region): extract cropped Stokes Q/U from the full IQUV cube
-    echo "[r${RID} Stage 1] Extracting Stokes Q/U with crop=${CROP} pointing=${POINT}"
+    # Stage 1 (per region): extract cropped Stokes I/Q/U from the full IQUV cube
+    echo "[r${RID} Stage 1] Extracting Stokes I/Q/U with crop=${CROP} pointing=${POINT}"
     singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py \
         --inputcube "$FITS_FULL" --crop "${CROP}" --pointing "${POINT}"
     R_BASE=$(basename "$FITS_FULL" .fits)
     R_FITS_Q="${R_BASE}.stokesQ.fits"
     R_FITS_U="${R_BASE}.stokesU.fits"
+    R_FITS_I="${R_BASE}.stokesI.fits"
+
+    # Stage 1.5 (per region): noise map
+    R_NOISE_MAP="noise_map.fits"
+    SLURMID_NOISE=""
+    if [ -n "$NOISE_MAP_CFG" ]; then
+        echo "[r${RID} Stage 1.5] Using pre-supplied noise map: $NOISE_MAP_CFG"
+        R_NOISE_MAP="$NOISE_MAP_CFG"
+    elif awk "BEGIN{exit !($THRESHOLD < 0)}"; then
+        echo "[r${RID} Stage 1.5] Submitting make_noise.sbatch (sigma mode)"
+        cat > make_noise.sbatch <<NOISEEOF
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=10GB
+#SBATCH --job-name=noise${SUFFIX}
+#SBATCH --output=logs/noise-%j.out
+#SBATCH --error=logs/noise-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=10:00:00
+#SBATCH --account=$ACCOUNT
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+cd "$WORKDIR/$REGION_DIR"
+singularity --quiet exec "$RM_CONTAINER" python -m RMtools_3D.make_noise_map \
+    "$R_FITS_I" -o "$R_NOISE_MAP" -B "$FITS_FULL" -v
+NOISEEOF
+        SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
+        ALL_NOISE_IDS="$ALL_NOISE_IDS $SLURMID_NOISE"
+        echo "[r${RID} Stage 1.5] Noise-map job: SLURM $SLURMID_NOISE"
+    else
+        echo "[r${RID} Stage 1.5] Absolute-threshold mode; skipping noise stage."
+        R_NOISE_MAP=""
+    fi
 
     # Stage 2 (per region): generate rmsy sbatch
     echo "[r${RID} Stage 2] Generating run_parallel_rmsy.sbatch (region $RID)"
@@ -718,12 +830,15 @@ for i in "${!REGION_IDS[@]}"; do
         --account "$ACCOUNT" \
         --casaContainer "$CASA_CONTAINER" \
         --rmContainer "$RM_CONTAINER" \
+        --noiseMap "$R_NOISE_MAP" \
         --jobNameSuffix "$SUFFIX" \
         --createSbatch
 
-    # Stage 3 (per region): submit rmsy array
-    SLURMID_RMSY=$(sbatch run_parallel_rmsy.sbatch | awk '{print $4}')
-    echo "[r${RID} Stage 3] RM synthesis array: SLURM job $SLURMID_RMSY"
+    # Stage 3 (per region): submit rmsy array (depends on noise stage if any)
+    DEP_RMSY=""
+    [ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE"
+    SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+    echo "[r${RID} Stage 3] RM synthesis array: SLURM job $SLURMID_RMSY ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
     ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
 
     # Stage 4 (per region): merge-prep dependent on this region's rmsy completing
@@ -784,9 +899,10 @@ scancel \$IDS
 EOF
     chmod +x "$script"
 }
+write_kill "killJobs_noise"         "$ALL_NOISE_IDS" "noise-map jobs (all regions)"
 write_kill "killJobs_rmsynth_clean" "$ALL_RMSY_IDS" "RM synthesis + clean arrays (all regions)"
 write_kill "killJobs_merge"         "$ALL_MERGEPREP_IDS" "merge prep jobs (will cascade to merge arrays)"
-write_kill "killJobs"               "$SLURM_JOB_ID $ALL_RMSY_IDS $ALL_MERGEPREP_IDS" "all processRM stages (all regions)"
+write_kill "killJobs"               "$SLURM_JOB_ID $ALL_NOISE_IDS $ALL_RMSY_IDS $ALL_MERGEPREP_IDS" "all processRM stages (all regions)"
 
 echo ""
 echo "===================================="
@@ -859,6 +975,7 @@ print(s or '$3')
 
 FITS_FULL=$(read_cfg data fits_full '')
 FREQLIST=$(read_cfg data freqlist '')
+NOISE_MAP_CFG=$(read_cfg noise noise_map '')
 PARALLEL=$(read_cfg chunking parallel 100)
 CHUNKS=$(read_cfg chunking chunks $PARALLEL)
 ACCOUNT=$(read_cfg slurm account b03-idia-ag)
