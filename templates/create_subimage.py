@@ -184,7 +184,11 @@ def fill_cube_with_images(inputName, crop, pointing, mode="normal"):
         addFitsHeaderDict = {
                 #"CRPIX3": 1, #lowestChanNo,
                 "CRPIX1": int(xdim/2 - pointing[0] + crop[0]/2),
-                "CRPIX2": int(ydim/2 - pointing[1] + crop[0]/2)
+                # [CHANGE 2026-06-22]: was crop[0]/2 (the WIDTH) for both axes,
+                # which gave a wrong CRPIX2 on non-square regions. Use crop[1]
+                # (the HEIGHT) for the Y reference pixel so the cropped cube's
+                # WCS places the data where CARTA expects it.
+                "CRPIX2": int(ydim/2 - pointing[1] + crop[1]/2)
                 #"OBJECT": str(conf.data.field),
                 #"NAXIS3": highestChannel,
                 #"CTYPE3": ("FREQ", ""),
