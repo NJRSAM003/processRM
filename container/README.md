@@ -16,21 +16,31 @@ This document only covers the rare cases below.
 
 ## What's inside rm-env.sif
 
-- Python 3.11
-- RM-Tools (`rmsynth3d`, `rmclean3d`)
+- Python 3.11 (`/opt/conda`)
+- **RM-Tools-sigma** — a lightly modified RM-Tools that adds 2D per-pixel
+  noise-map support (`rmsynth3d -N`, `rmclean3d -N -c -<sigma>`) and
+  ships the `RMtools_3D.make_noise_map` module
+- **PyBDSF (`bdsf`)** — used by `make_noise_map` to estimate per-channel RMS
 - `fits2idia` (FITS → IDIA HDF5 for CARTA)
 - numpy, scipy, astropy, matplotlib, h5py
 
 ---
 
-## (Optional) Re-download or pin a specific version
+## Upgrading to a newer container
 
-`./download_container.sh` always fetches the latest published release:
+When a new container is published as a GitHub Release, your local
+`rm-env.sif` is **not** updated automatically. To pull the new one:
 
 ```bash
 cd ~/processRM/container/
-./download_container.sh           # latest release
-./download_container.sh v1.0      # pin a specific version
+rm rm-env.sif                     # delete the old image
+./download_container.sh           # fetches whatever Release is marked "Latest"
+```
+
+Pin a specific version instead:
+
+```bash
+./download_container.sh v2.0-sigma
 ```
 
 Or download manually:
