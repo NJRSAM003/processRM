@@ -905,7 +905,7 @@ set -e
 export PYTHONDONTWRITEBYTECODE=1
 cd "$WORKDIR"
 singularity --quiet exec "$RM_CONTAINER" python -m RMtools_3D.make_noise_map \
-    "$FITS_I" -o "$NOISE_MAP" -B "$FITS_FULL" -v
+    "$FITS_Q" "$FITS_U" -o "$NOISE_MAP" -B "$FITS_FULL" -v
 NOISEEOF
     SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
     echo "  -> Noise-map job: SLURM $SLURMID_NOISE"
@@ -1115,7 +1115,7 @@ set -e
 export PYTHONDONTWRITEBYTECODE=1
 cd "$WORKDIR/$REGION_DIR"
 singularity --quiet exec "$RM_CONTAINER" python -m RMtools_3D.make_noise_map \
-    "$R_FITS_I" -o "$R_NOISE_MAP" -B "$FITS_FULL" -v
+    "$R_FITS_Q" "$R_FITS_U" -o "$R_NOISE_MAP" -B "$FITS_FULL" -v
 NOISEEOF
         SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
         ALL_NOISE_IDS="$ALL_NOISE_IDS $SLURMID_NOISE"
