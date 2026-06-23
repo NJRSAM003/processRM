@@ -700,7 +700,12 @@ def build_config_from_args(args, workdir):
         config_name += '.txt'
     config_path = os.path.join(workdir, os.path.basename(config_name))
     if os.path.exists(config_path):
-        logger.warning(f"Overwriting existing config: {config_path}")
+        # Move the existing config to <name>.bck (overwriting any older
+        # backup) so a fresh BUILD never silently loses the user's last
+        # set of edits. Restore by `mv myconfig.txt.bck myconfig.txt`.
+        backup_path = config_path + '.bck'
+        shutil.move(config_path, backup_path)
+        logger.warning(f"Existing config backed up to: {backup_path}")
     shutil.copy2(DEFAULT_CONFIG, config_path)
     logger.info(f"Created config file: {config_path}")
 
