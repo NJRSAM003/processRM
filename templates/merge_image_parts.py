@@ -243,25 +243,24 @@ def create_all_cubes(inputcube, slurmArrayTaskId):
     for inputName in listing_basenames:
         fix_invalid_stokes_axis(inputName)
 
-    # [CHANGE 2026-06-11]: Containerised fits2idia call
-    # Reason: fits2idia must run inside the rm-env container (or a dedicated IDIA container).
-    # Currently using CASA container as fallback if fits2idia not present in rm-env.
-    rm_container = os.environ.get("PROCESSRM_RM_CONTAINER", "")
+    # [CHANGE 2026-06-23]: drop the nested `singularity exec` wrap around
+    # fits2idia. merge_image_parts.py itself is already invoked via
+    # `singularity exec rm-env.sif python3 ./merge_image_parts.py ...` by
+    # the sbatch, so fits2idia is already on PATH inside the container.
+    # Trying to nest another singularity exec from inside a Singularity
+    # container fails silently (no namespace to spawn into), which is
+    # why .hdf5 files were never landing next to the merged FITS.
     for inputName in listing_basenames:
-        if rm_container:
-            command = f"singularity --quiet exec {rm_container} fits2idia -s -p {inputName}"
-        else:
-            command = f"fits2idia -s -p {inputName}"
+        command = f"fits2idia -s -p {inputName}"
         print(f"Command: {command}")
-        sbatchResult = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, shell=True)
-        sbatchResultStd = sbatchResult.stdout.replace("\n", " ")
-        print(sbatchResultStd)
-        # parse the slurm job ID from sbatchResult
-        #slurmIDList = [ int(num) for num in sbatchResultStd.split() if num.isdigit() ]
-        if sbatchResult.stderr:
-            sbatchResultStderrList = sbatchResult.stderr.split("\n")
-            for sbatchResultStderr in sbatchResultStderrList:
-                print(sbatchResultStderr)
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                universal_newlines=True, shell=True)
+        if result.stdout:
+            print(result.stdout.strip())
+        if result.stderr:
+            print(result.stderr.strip())
+        if result.returncode != 0:
+            print(f"WARNING: fits2idia exited with code {result.returncode} for {inputName}")
 
 
 def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa_container='', job_name_suffix=''):
