@@ -262,6 +262,25 @@ def count_merged(workdir):
     return len(merged_files), len(candidates), merged_files
 
 
+def count_hdf5(workdir):
+    """How many fits2idia .hdf5 companions exist for the merged outputs.
+
+    Glob FDF_*.fits / RMSF_*.fits / CLEAN_*.fits in workdir; for each one,
+    check whether a matching .hdf5 sits next to it. Returns (done, total)
+    where total is the number of merged FITS currently on disk -- so the
+    bar reads N/N once every merge has been converted, and grows in lock-
+    step with Merging while fits2idia is still working through them.
+    """
+    done = 0
+    total = 0
+    for prefix in ('FDF_', 'RMSF_', 'CLEAN_'):
+        for fits_path in glob.glob(os.path.join(workdir, f'{prefix}*.fits')):
+            total += 1
+            if os.path.exists(fits_path[:-5] + '.hdf5'):
+                done += 1
+    return done, total
+
+
 def read_chunks_from_config(workdir):
     """Get the chunks count from config (if it exists) for the denominator."""
     config_files = sorted(glob.glob(os.path.join(workdir, '*.txt')))
@@ -479,6 +498,13 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
         merge_suffix = ''
     print(f"  {merge_colour}{bar(merged_count, merged_total, label='Merging')}"
           f"{merge_suffix}{C.END}")
+
+    # HDF5 conversion (fits2idia, runs at the end of each merge task). Total
+    # tracks the count of merged FITS currently on disk, so this bar fills
+    # in lockstep with Merging.
+    hdf5_done, hdf5_total = count_hdf5(workdir)
+    hdf5_colour = C.CYAN if hdf5_done == hdf5_total else C.YELLOW
+    print(f"  {hdf5_colour}{bar(hdf5_done, hdf5_total, label='HDF5')}{C.END}")
     return merged_files
 
 
