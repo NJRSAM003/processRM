@@ -893,7 +893,7 @@ elif awk "BEGIN{exit !($THRESHOLD < 0)}"; then
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=10GB
+#SBATCH --mem=${MEM_NOISE}GB
 #SBATCH --job-name=noise
 #SBATCH --output=logs/noise-%j.out
 #SBATCH --error=logs/noise-%j.err
@@ -942,7 +942,9 @@ singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parall
 echo ""
 echo "[Stage 3] Submitting RM synthesis array job..."
 DEP_RMSY=""
-[ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE"
+# --kill-on-invalid-dep=yes so SLURM auto-cancels rmsy if the noise job
+# fails, instead of leaving it pending with DependencyNeverSatisfied.
+[ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE --kill-on-invalid-dep=yes"
 SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
 echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
 
@@ -991,7 +993,7 @@ else
     echo "[merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
 MPEOF
-SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_prep.sbatch | awk '{print $4}')
+SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes merge_prep.sbatch | awk '{print $4}')
 echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
 SLURMID_MERGE="$SLURMID_MERGEPREP"
 
@@ -1103,7 +1105,7 @@ for i in "${!REGION_IDS[@]}"; do
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=10GB
+#SBATCH --mem=${MEM_NOISE}GB
 #SBATCH --job-name=noise${SUFFIX}
 #SBATCH --output=logs/noise-%j.out
 #SBATCH --error=logs/noise-%j.err
@@ -1151,7 +1153,9 @@ NOISEEOF
 
     # Stage 3 (per region): submit rmsy array (depends on noise stage if any)
     DEP_RMSY=""
-    [ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE"
+    # --kill-on-invalid-dep=yes so rmsy self-cancels if the per-region noise
+    # job fails, instead of squatting in the queue forever.
+    [ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE --kill-on-invalid-dep=yes"
     SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
     echo "[r${RID} Stage 3] RM synthesis array: SLURM job $SLURMID_RMSY ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
     ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
@@ -1198,7 +1202,7 @@ else
     echo "[r${RID} merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
 MPEOF
-    SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY merge_prep.sbatch | awk '{print $4}')
+    SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes merge_prep.sbatch | awk '{print $4}')
     echo "[r${RID} Stage 4] Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
     ALL_MERGEPREP_IDS="$ALL_MERGEPREP_IDS $SLURMID_MERGEPREP"
 
@@ -1311,6 +1315,7 @@ WEIGHTTYPE=$(read_cfg rmsynth weighttype uniform)
 FIT_GAUSSIAN_RMSF=$(read_cfg rmsynth fit_gaussian_rmsf True)
 SKIP_RMSF=$(read_cfg rmsynth skip_rmsf False)
 SUPER_RESOLUTION=$(read_cfg rmsynth super_resolution False)
+MEM_NOISE=$(read_cfg slurm mem_noise 100)
 
 echo "RM container:   $RM_CONTAINER"
 echo "CASA container: $CASA_CONTAINER"

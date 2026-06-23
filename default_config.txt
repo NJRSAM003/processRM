@@ -59,6 +59,7 @@ nodes = 1
 ntasks_per_node = 1
 cpus_per_task = 1
 mem = 10                          # GB per RM-synth/clean task
+mem_noise = 100                   # GB for the noise-map (PyBDSF) job. Needs to fit Stokes Q + U in memory; bump for large cubes (a 6144x6144x177 cube needs ~55 GB just for the data).
 mem_merge = 100                   # GB per merge task
 partition = 'Main'
 time = '10:00:00'                 # Walltime per chunk
