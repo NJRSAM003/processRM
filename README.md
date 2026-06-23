@@ -91,10 +91,10 @@ Pass a **full-Stokes IQUV radio-continuum cube** plus a frequency list. processR
 
 ```bash
 # Whole cube
-processRM -F mycube_IQUV.fits -f mycube.freqlist.txt --chunks 100
+processRM -B -F mycube_IQUV.fits -f mycube.freqlist.txt --chunks 100
 
 # One or more boxed regions (CRTF or DS9, pixel or world)
-processRM -F mycube_IQUV.fits -f mycube.freqlist.txt -r myregions.crtf --chunks 100
+processRM -B -F mycube_IQUV.fits -f mycube.freqlist.txt -r myregions.crtf --chunks 100
 ```
 
 This step **only writes `myconfig.txt`** (and prints a preview of the chunk geometry and detected regions). It runs cube structural checks up front — 3D cubes, mismatched freqlist lengths, and unsupported region shapes will fail here before any SLURM job is created. Open `myconfig.txt` and review the values.

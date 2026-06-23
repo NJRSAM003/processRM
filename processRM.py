@@ -15,8 +15,8 @@ Modeled after processMeerKAT.
 
 Usage:
   BUILD a new config (you provide a full-Stokes IQUV cube + freq list):
-    processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
-    processRM -F mycube_IQUV.fits -f freqs.txt -C run1.txt   # custom name
+    processRM -B -F mycube_IQUV.fits -f mycube.freqlist.txt
+    processRM -B -F mycube_IQUV.fits -f freqs.txt -C run1.txt   # custom name
 
   RUN an existing config:
     processRM -R myconfig.txt
@@ -420,16 +420,16 @@ def parse_args():
         epilog="""
 Examples:
   # BUILD a config from a full Stokes IQUV cube + freq list (default name: myconfig.txt)
-  processRM -F mycube_IQUV.fits -f mycube.freqlist.txt
+  processRM -B -F mycube_IQUV.fits -f mycube.freqlist.txt
 
   # BUILD with a custom config name
-  processRM -F mycube_IQUV.fits -f mycube.freqlist.txt -C run1.txt
+  processRM -B -F mycube_IQUV.fits -f mycube.freqlist.txt -C run1.txt
 
   # BUILD with a specific chunk count
-  processRM -F mycube_IQUV.fits -f freqs.txt --chunks 50
+  processRM -B -F mycube_IQUV.fits -f freqs.txt --chunks 50
 
   # BUILD and submit immediately
-  processRM -F mycube_IQUV.fits -f freqs.txt -s
+  processRM -B -F mycube_IQUV.fits -f freqs.txt -s
 
   # RUN an existing config (regenerate submit_pipeline.sh from it)
   processRM -R myconfig.txt
@@ -439,6 +439,10 @@ Examples:
 """
     )
 
+    parser.add_argument('-B', '--build', action='store_true',
+                        help='BUILD mode: generate a new config from the inputs given via '
+                             '-F / -f / -r / --chunks. Does not submit anything unless -s is '
+                             'also passed. Mutually exclusive with -R.')
     parser.add_argument('-F', '--fitsfile',
                         help='BUILD mode: path to the full-Stokes IQUV radio-continuum cube '
                              '(e.g. mycube_IQUV.fits). processRM extracts Stokes I, Q, and U '
@@ -446,7 +450,7 @@ Examples:
                              'absolute paths are fine — processRM will symlink the file into '
                              'the current directory so all outputs land here.')
     parser.add_argument('-f', '--freqlist',
-                        help='Path to frequency list (.txt). Required when -F is used.')
+                        help='Path to frequency list (.txt). Required when -B is used.')
     parser.add_argument('-r', '--region-file', dest='region_file', default=None,
                         help='Optional CARTA region file (.crtf or .ds9, pixel or world). '
                              'Boxed regions only. Each box becomes an independent processing '
@@ -1702,15 +1706,19 @@ def main():
     print()
 
     # Mode selection:
-    #   -F BUILD mode: only writes/updates the config file
+    #   -B BUILD mode: only writes/updates the config file
     #   -R RUN mode:   reads the config, creates symlinks, copies scripts,
     #                  generates submit_pipeline.sh, and (with -s) submits.
     # The two modes are mutually exclusive.
-    if args.fitsfile and args.run_config:
-        logger.error("Cannot use -F (build) and -R (run) at the same time.")
+    if args.build and args.run_config:
+        logger.error("Cannot use -B (build) and -R (run) at the same time.")
         sys.exit(1)
 
-    if args.fitsfile:
+    if args.build:
+        if not args.fitsfile:
+            logger.error("-B (build) requires -F <full-Stokes IQUV cube>.")
+            logger.error("Try 'processRM --help' for examples.")
+            sys.exit(1)
         # BUILD: just write the config and stop.
         config_path = build_config_from_args(args, workdir)
         try:
@@ -1733,8 +1741,12 @@ def main():
         return
 
     if not args.run_config:
-        logger.error("Must provide either -F (build mode) or -R (run mode).")
-        logger.error("Try 'processRM --help' for examples.")
+        if args.fitsfile:
+            logger.error("-F was given but -B (build) is required to enter BUILD mode.")
+            logger.error("Try: processRM -B -F <cube.fits> -f <freqs.txt>")
+        else:
+            logger.error("Must provide either -B (build mode) or -R (run mode).")
+            logger.error("Try 'processRM --help' for examples.")
         sys.exit(1)
 
     # RUN mode

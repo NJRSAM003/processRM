@@ -5,7 +5,7 @@
 # ==================================================================
 #
 # This script adds processRM to your PATH so it can be invoked
-# from anywhere as: processRM -F file.fits -f freqs.txt
+# from anywhere as: processRM -B -F file.fits -f freqs.txt
 #
 # Usage:  ./setup.sh
 #
@@ -93,9 +93,9 @@ echo "  Then verify:"
 echo "      processRM --help"
 echo ""
 echo "  Example usage:"
-echo "      processRM -F mycube_IQUV.fits -f freqs.txt           # BUILD config"
-echo "      processRM -F mycube_IQUV.fits -f freqs.txt -r boxes.crtf   # BUILD with regions"
-echo "      processRM -R myconfig.txt -s                          # RUN + submit"
+echo "      processRM -B -F mycube_IQUV.fits -f freqs.txt              # BUILD config"
+echo "      processRM -B -F mycube_IQUV.fits -f freqs.txt -r boxes.crtf  # BUILD with regions"
+echo "      processRM -R myconfig.txt -s                                # RUN + submit"
 echo ""
 echo "  Container is at: $CONTAINER_SIF"
 echo "  Move it to a SLURM-readable location (e.g."
