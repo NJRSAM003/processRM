@@ -998,6 +998,31 @@ echo "Cancelling \$SLURMID_MERGE (merge array)"
 scancel \$SLURMID_MERGE
 EOF2
     chmod +x killJobs_merge
+
+    # Generate + submit a tiny finalize job that removes orphaned CASA log
+    # files (casa-*.log) from the workdir once every merge task has run.
+    # afterany so it still cleans up even if some merges failed.
+    cat > finalize.sbatch <<FINEOF
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=1GB
+#SBATCH --job-name=finalize
+#SBATCH --output=logs/finalize-%j.out
+#SBATCH --error=logs/finalize-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=00:05:00
+#SBATCH --account=$ACCOUNT
+
+set -e
+cd "$WORKDIR"
+echo "[finalize] removing casa-*.log files from \$(pwd)..."
+rm -fv casa-*.log 2>/dev/null || true
+echo "[finalize] done."
+FINEOF
+    SLURMID_FINALIZE=\$(sbatch --dependency=afterany:\$SLURMID_MERGE finalize.sbatch | awk '{print \$4}')
+    echo "[merge_prep] Submitted finalize: \$SLURMID_FINALIZE (cleans casa logs after merge)"
 else
     echo "[merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
@@ -1207,6 +1232,30 @@ m.write_sbatch_file('$INPUT_CUBE',
 if [ -f merge_image_parts.sbatch ]; then
     SLURMID_MERGE=\$(sbatch merge_image_parts.sbatch | awk '{print \$4}')
     echo "[r${RID} merge_prep] Submitted merge array: \$SLURMID_MERGE"
+
+    # Per-region finalize: clean casa-*.log out of this region subdir once
+    # all of its merges have run (afterany so it cleans even on partial fail).
+    cat > finalize.sbatch <<FINEOF
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=1GB
+#SBATCH --job-name=finalize${SUFFIX}
+#SBATCH --output=logs/finalize-%j.out
+#SBATCH --error=logs/finalize-%j.err
+#SBATCH --partition=Main
+#SBATCH --time=00:05:00
+#SBATCH --account=$ACCOUNT
+
+set -e
+cd "$WORKDIR/$REGION_DIR"
+echo "[r${RID} finalize] removing casa-*.log files from \$(pwd)..."
+rm -fv casa-*.log 2>/dev/null || true
+echo "[r${RID} finalize] done."
+FINEOF
+    SLURMID_FINALIZE=\$(sbatch --dependency=afterany:\$SLURMID_MERGE finalize.sbatch | awk '{print \$4}')
+    echo "[r${RID} merge_prep] Submitted finalize: \$SLURMID_FINALIZE (cleans casa logs)"
 else
     echo "[r${RID} merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
