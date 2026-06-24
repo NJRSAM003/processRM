@@ -23,28 +23,31 @@ def make_empty_image(inputName, initial_fits_header, mode="normal"):
     product (FDF_*_tot, RMSF_*, FDF_maxPI, RMSF_FWHM, ...).
 
     rmsynth3d writes some products as 4D cubes (1, NPHI, NY, NX) and others
-    as bare 2D images (NY, NX). We inspect the first chunk to decide which
-    shape to allocate, and write a header whose NAXIS keyword count agrees
-    with the actual data rank -- otherwise astropy's verify refuses to flush
-    the file with errors like "NAXIS3 out of range when NAXIS == 2".
+    as bare 2D images (NY, NX). We ALWAYS allocate a 4D file with NAXIS=4 --
+    real cubes use the chunk's NPHI for axis 3 and 1 for axis 4; 2D products
+    use 1 for both axes 3 and 4 (CARTA's HDF5 reader expects 4D images, so a
+    truly-2D HDF5 from fits2idia fails to open with "cannot determine
+    coordinate axes from incomplete header").
+
+    Axis 3 / axis 4 WCS keys are copied from the input chunk when present (4D
+    products carry phi / Stokes on those axes from rmsynth3d), and otherwise
+    seeded from initial_fits_header so degenerate-axis 2D products still have
+    a valid CTYPE/CRVAL/CRPIX/CDELT/CUNIT triplet on axes 3 and 4.
     """
     cubeNameInput = inputName
 
     hduCubeInput = fits.open("processing/part_1_" + cubeNameInput, memmap=True, mode="update")
     sample_shape = np.squeeze(hduCubeInput[0].data).shape
 
-    # [CHANGE 2026-06-21]: detect 2D vs 3D+ chunks explicitly. Previously the
-    # try/except always treated 2D inputs as 4D (zdim=wdim=1) with NAXIS=4 in
-    # the header, which crashed astropy's verify on close.
     is_2d = len(sample_shape) < 3
     if is_2d:
-        zdim = wdim = None
+        zdim, wdim = 1, 1
     else:
         zdim = sample_shape[-3]
         wdim = 1
 
     xdim, ydim = initial_fits_header['NAXIS1'], initial_fits_header['NAXIS2']
-    dims = (xdim, ydim) if is_2d else (xdim, ydim, zdim, wdim)
+    dims = (xdim, ydim, zdim, wdim)
 
     dummy_dims = tuple(1 for _ in dims)
     dummy_data = np.zeros(dummy_dims, dtype=np.float32)
@@ -57,7 +60,7 @@ def make_empty_image(inputName, initial_fits_header, mode="normal"):
     # astropy's verify rejects the file with "'NAXIS1' card at the wrong place".
     new_n = len(dims)
     old_n = int(header.get('NAXIS', 0))
-    # 1) strip axes we don't want any more (e.g. going from 4D input to 2D out)
+    # 1) strip axes we don't want any more (e.g. NAXIS5 from a stray HDU)
     for j in range(new_n + 1, max(old_n, new_n) + 1):
         key = f"NAXIS{j}"
         if key in header:
@@ -69,6 +72,29 @@ def make_empty_image(inputName, initial_fits_header, mode="normal"):
     for i, dim in enumerate(dims, 1):
         anchor = 'NAXIS' if i == 1 else f'NAXIS{i-1}'
         header.set(f'NAXIS{i}', dim, after=anchor)
+
+    # [CHANGE 2026-06-24]: 2D products (NAXIS3=NAXIS4=1) need real WCS keys on
+    # axes 3 and 4 too or CARTA refuses to open the resulting HDF5 with
+    # "cannot determine coordinate axes from incomplete header". Seed from
+    # initial_fits_header (which carries the input IQUV cube's FREQ/STOKES
+    # axes), falling back to sensible defaults when the input didn't have them.
+    if is_2d:
+        axis3_defaults = {
+            'CTYPE3': initial_fits_header.get('CTYPE3', 'FREQ'),
+            'CRVAL3': initial_fits_header.get('CRVAL3', 1.4e9),
+            'CRPIX3': initial_fits_header.get('CRPIX3', 1.0),
+            'CDELT3': initial_fits_header.get('CDELT3', 1.0),
+            'CUNIT3': initial_fits_header.get('CUNIT3', 'Hz'),
+        }
+        axis4_defaults = {
+            'CTYPE4': initial_fits_header.get('CTYPE4', 'STOKES'),
+            'CRVAL4': initial_fits_header.get('CRVAL4', 1.0),
+            'CRPIX4': initial_fits_header.get('CRPIX4', 1.0),
+            'CDELT4': initial_fits_header.get('CDELT4', 1.0),
+            'CUNIT4': initial_fits_header.get('CUNIT4', ''),
+        }
+        for key, value in {**axis3_defaults, **axis4_defaults}.items():
+            header[key] = value
 
     cubeNameOutput = inputName
 
@@ -120,11 +146,6 @@ def fix_invalid_stokes_axis(filepathCube):
         return
     with fits.open(filepathCube, mode='update') as hud:
         header = hud[0].header
-        # CRVAL4 is meaningless on 2D outputs (FDF_maxPI / FDF_peakRM /
-        # RMSF_FWHM) -- writing it would trigger an astropy verify error
-        # on close because NAXIS=2 has no axis 4.
-        if int(header.get('NAXIS', 0)) < 4:
-            return
         crval4 = header.get('CRVAL4', None)
         if crval4 == 0 or crval4 is None:
             header['CRVAL4'] = 1
@@ -205,6 +226,16 @@ def create_all_cubes(inputcube, slurmArrayTaskId):
             "CUNIT1": header.get("CUNIT1", "deg"),
             "CUNIT2": header.get("CUNIT2", "deg"),
             }
+    # [CHANGE 2026-06-24]: also pull through the input cube's axis-3 and axis-4
+    # WCS keys (FREQ + STOKES on a typical IQUV cube). make_empty_image uses
+    # them as the WCS for the degenerate axes when allocating a 4D file for a
+    # 2D rmsynth3d product (FDF_maxPI, FDF_peakRM, FDF_noise[_th], CLEAN_nIter,
+    # RMSF_FWHM), without which the resulting HDF5 fails to open in CARTA.
+    for axis in (3, 4):
+        for key_prefix in ("CTYPE", "CRVAL", "CRPIX", "CDELT", "CUNIT"):
+            key = f"{key_prefix}{axis}"
+            if key in header:
+                initial_fits_header[key] = header[key]
 
     def get_part_number(x):
         return int(x.split("part_")[1].split("_")[0])
