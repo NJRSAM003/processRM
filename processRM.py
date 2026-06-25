@@ -1672,9 +1672,10 @@ def cleanup_run_artifacts(workdir, keep_config=None):
 
 
 def _archive_previous_logs(workdir):
-    """Move stale .err / .out files (and the contents of errors/<stage>/)
-    into archive_<timestamp>/ subdirs so a fresh -R run's fullSummary error
-    report doesn't get polluted by failures from prior submissions.
+    """Move stale .err / .out / timings.csv (and the contents of
+    errors/<stage>/) into archive_<timestamp>/ subdirs so a fresh -R run's
+    fullSummary report (errors AND per-stage timings) reflects only what
+    this submission produces.
 
     Walks the top-level workdir AND any region<N>/ subdirs created by a
     previous multi-region run. Nothing is deleted -- just moved. If there
@@ -1687,12 +1688,18 @@ def _archive_previous_logs(workdir):
         logs_dir = os.path.join(base, 'logs')
         errors_dir = os.path.join(base, 'errors')
 
-        # Move logs/*.err and logs/*.out (NOT the timings.csv -- that's
-        # cumulative across runs, harmless and useful to keep).
+        # Move logs/*.err, logs/*.out, and logs/timings.csv. The per-stage
+        # timings table in fullSummary appends one row per task per
+        # submission, so without rolling it over each run the table shows
+        # the cumulative history across every resubmit and confuses the
+        # user about what THIS run actually did.
         log_files = []
         if os.path.isdir(logs_dir):
-            log_files = glob.glob(os.path.join(logs_dir, '*.err')) + \
-                        glob.glob(os.path.join(logs_dir, '*.out'))
+            log_files = (glob.glob(os.path.join(logs_dir, '*.err')) +
+                         glob.glob(os.path.join(logs_dir, '*.out')))
+            timings_csv = os.path.join(logs_dir, 'timings.csv')
+            if os.path.exists(timings_csv):
+                log_files.append(timings_csv)
 
         # Move errors/<stage>/* (the orchestrator pre-creates errors/<stage>/
         # subdirs which may be empty; only sweep files inside them).
