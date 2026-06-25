@@ -474,17 +474,29 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
     rmsynth = count_rmsynth(workdir)
     rmclean = count_rmclean(workdir)
 
-    # Chunks (Q/U .fits) ARE deleted as soon as the same task's rmclean
-    # finishes, so a naive count under-reports. Pin the bar to the highest
-    # of: chunks still on disk, the chunking row in timings.csv, the rmsynth
-    # count (rmsynth can't have run without chunking), and rmclean count.
+    # Chunk counter is a max() across signals; we kept Q/U .fits around for
+    # the chronological bars but a previous run with a different cube
+    # basename or chunk count can leave stale part_*_*stokesQ.fits behind,
+    # pushing chunked above total. Cap at total for the bar and surface the
+    # extras as a "+N stale" note so the user knows there's cleanup to do.
     chunked = max(
         count_chunked_inputs(workdir),
         timings.get('chunking', {}).get('ok', 0) + timings.get('chunking', {}).get('skipped', 0),
         rmsynth,
         rmclean,
     )
-    stage_render('chunking', chunked, total_chunks, 'Chunking')
+    extra_chunks = max(0, chunked - total_chunks)
+    chunked_display = min(chunked, total_chunks)
+    if 'chunking' in cancelled:
+        chunk_colour, chunk_suffix = C.RED, ' (cancelled)'
+    elif extra_chunks:
+        chunk_colour = C.CYAN
+        chunk_suffix = (f' (+{extra_chunks} stale .fits in processing/ from '
+                        f'a previous run -- safe to delete)')
+    else:
+        chunk_colour, chunk_suffix = C.CYAN, ''
+    print(f"  {chunk_colour}{bar(chunked_display, total_chunks, label='Chunking')}"
+          f"{chunk_suffix}{C.END}")
     stage_render('rmsynth', rmsynth, total_chunks, 'RM Synthesis')
     stage_render('rmclean', rmclean, total_chunks, 'RM Clean')
 
