@@ -396,8 +396,12 @@ def collect_errors(workdir):
     warnings_by_stage = defaultdict(list)
 
     # Organised errors directory: assume the user already triaged anything in here.
+    # Skip archive_<timestamp>/ subdirs created by processRM -R when it stashes
+    # previous-run logs so they don't pollute the current run's error report.
     if os.path.isdir(errors_dir):
         for stage in os.listdir(errors_dir):
+            if stage.startswith('archive_'):
+                continue
             stage_path = os.path.join(errors_dir, stage)
             if os.path.isdir(stage_path):
                 for err_file in glob.glob(os.path.join(stage_path, '*')):

@@ -32,6 +32,7 @@ __version__ = '2.0'
 import argparse
 import os
 import sys
+import glob
 import json
 import shutil
 import logging
@@ -1618,6 +1619,60 @@ def cleanup_run_artifacts(workdir, keep_config=None):
         logger.warning(f"Cleaned up stale artifacts: {', '.join(removed)}")
 
 
+def _archive_previous_logs(workdir):
+    """Move stale .err / .out files (and the contents of errors/<stage>/)
+    into archive_<timestamp>/ subdirs so a fresh -R run's fullSummary error
+    report doesn't get polluted by failures from prior submissions.
+
+    Walks the top-level workdir AND any region<N>/ subdirs created by a
+    previous multi-region run. Nothing is deleted -- just moved. If there
+    are no stale files anywhere, the function is a no-op.
+    """
+    ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    bases = [workdir] + sorted(glob.glob(os.path.join(workdir, 'region[0-9]*')))
+    archived = []
+    for base in bases:
+        logs_dir = os.path.join(base, 'logs')
+        errors_dir = os.path.join(base, 'errors')
+
+        # Move logs/*.err and logs/*.out (NOT the timings.csv -- that's
+        # cumulative across runs, harmless and useful to keep).
+        log_files = []
+        if os.path.isdir(logs_dir):
+            log_files = glob.glob(os.path.join(logs_dir, '*.err')) + \
+                        glob.glob(os.path.join(logs_dir, '*.out'))
+
+        # Move errors/<stage>/* (the orchestrator pre-creates errors/<stage>/
+        # subdirs which may be empty; only sweep files inside them).
+        error_files = []
+        if os.path.isdir(errors_dir):
+            for entry in os.listdir(errors_dir):
+                entry_path = os.path.join(errors_dir, entry)
+                if entry.startswith('archive_'):
+                    continue
+                if os.path.isdir(entry_path):
+                    error_files.extend(glob.glob(os.path.join(entry_path, '*')))
+
+        if not log_files and not error_files:
+            continue
+
+        if log_files:
+            archive_logs = os.path.join(logs_dir, f'archive_{ts}')
+            os.makedirs(archive_logs, exist_ok=True)
+            for f in log_files:
+                shutil.move(f, archive_logs)
+        if error_files:
+            archive_errors = os.path.join(errors_dir, f'archive_{ts}')
+            os.makedirs(archive_errors, exist_ok=True)
+            for f in error_files:
+                shutil.move(f, archive_errors)
+
+        archived.append(os.path.relpath(base, workdir) or '.')
+    if archived:
+        logger.info(f"  -> archived previous logs (in {', '.join(archived)}) "
+                    f"to archive_{ts}/")
+
+
 def materialize_workdir_from_config(config_path, workdir):
     """RUN-mode setup: validate input files first, then symlink them into
     workdir, copy pipeline scripts in, and generate submit_pipeline.sh.
@@ -1809,6 +1864,10 @@ def materialize_workdir_from_config(config_path, workdir):
         logger.info(f"will run {len(regions)} region(s):")
         for line in region_parser.describe_regions(regions):
             logger.info(f"  -> {line}")
+
+    # Stash any leftover .err/.out files from previous submissions so
+    # fullSummary's error report reflects only what this run produces.
+    _archive_previous_logs(workdir)
 
     return generate_submit_script(workdir, config_path, regions=regions)
 
