@@ -1,0 +1,122 @@
+# ==============================================================
+# Patch for fullSummary on ilifu - classify .err files by content
+# Stop treating CASA WARN-only .err files as errors.
+#
+# How to apply:
+#   nano fullSummary
+#
+#   Step 1 (replace collect_errors):
+#     Ctrl-W  -> search:  def collect_errors
+#     Delete the whole function (def line + its body, about 22 lines).
+#     Paste the block under "SNIPPET 1" below in its place.
+#
+#   Step 2 (replace the Errors section in display_summary):
+#     Ctrl-W  -> search:  # Errors
+#     Delete the old block (from `# Errors` down to the blank
+#     line that ends with `print()` after `--errors for full details`).
+#     Paste the block under "SNIPPET 2" below in its place.
+#
+#   Ctrl-O to save, Ctrl-X to exit.
+# ==============================================================
+
+
+# -------- SNIPPET 1 (paste at the def collect_errors location) --------
+
+_REAL_ERROR_RE = re.compile(
+    r'\b(SEVERE|ERROR|FATAL|Traceback|Segmentation fault|core dumped|'
+    r'srun: error|sbatch: error|killed|abort)\b',
+    re.IGNORECASE,
+)
+
+
+def _classify_err_file(err_file):
+    """Returns 'error' / 'warn' / None based on .err content."""
+    try:
+        size = os.path.getsize(err_file)
+    except OSError:
+        return None
+    if size < 50:
+        return None
+    try:
+        with open(err_file, 'r', errors='replace') as f:
+            content = f.read(50000)
+    except OSError:
+        return None
+    if _REAL_ERROR_RE.search(content):
+        return 'error'
+    if 'WARN' in content or 'Warning' in content or 'warning' in content:
+        return 'warn'
+    return 'warn'
+
+
+def collect_errors(workdir):
+    errors_dir = os.path.join(workdir, 'errors')
+    logs_dir = os.path.join(workdir, 'logs')
+
+    by_stage = defaultdict(list)
+    warnings_by_stage = defaultdict(list)
+
+    if os.path.isdir(errors_dir):
+        for stage in os.listdir(errors_dir):
+            stage_path = os.path.join(errors_dir, stage)
+            if os.path.isdir(stage_path):
+                for err_file in glob.glob(os.path.join(stage_path, '*')):
+                    by_stage[stage].append(err_file)
+
+    if os.path.isdir(logs_dir):
+        for err_file in glob.glob(os.path.join(logs_dir, '*.err')):
+            kind = _classify_err_file(err_file)
+            if kind is None:
+                continue
+            base = os.path.basename(err_file).lower()
+            if 'rmsy' in base:
+                stage = 'rmsynth/rmclean'
+            elif 'merge' in base:
+                stage = 'merge'
+            elif 'orchestrate' in base:
+                stage = 'orchestrator'
+            else:
+                stage = 'unknown'
+            if kind == 'error':
+                by_stage[stage].append(err_file)
+            else:
+                warnings_by_stage[stage].append(err_file)
+
+    return dict(by_stage), dict(warnings_by_stage)
+
+# -------- end of SNIPPET 1 --------
+
+
+
+# -------- SNIPPET 2 (paste at the `# Errors` location in display_summary) --------
+
+    # Errors / Warnings
+    print(f"{C.BOLD}━━━ ERROR SUMMARY ━━━{C.END}")
+    errors, warnings = collect_errors(workdir)
+
+    if not errors and not warnings:
+        print(f"  {C.GREEN}No errors or warnings detected.{C.END}")
+    else:
+        if not errors:
+            print(f"  {C.GREEN}No errors detected.{C.END}")
+        for stage, err_files in errors.items():
+            print(f"  {C.RED}[ERROR] [{stage}]{C.END} {len(err_files)} file(s)")
+            if show_errors:
+                for ef in err_files[:5]:
+                    print(f"     - {ef}")
+                if len(err_files) > 5:
+                    print(f"     ... and {len(err_files) - 5} more")
+        for stage, warn_files in warnings.items():
+            print(f"  {C.YELLOW}[WARN]  [{stage}]{C.END} {len(warn_files)} file(s)")
+            if show_errors:
+                for wf in warn_files[:3]:
+                    print(f"     - {wf}")
+                if len(warn_files) > 3:
+                    print(f"     ... and {len(warn_files) - 3} more")
+    print()
+
+    if not show_errors and (any(errors.values()) or any(warnings.values())):
+        print(f"  {C.GREY}Run with --errors for full details.{C.END}")
+    print()
+
+# -------- end of SNIPPET 2 --------

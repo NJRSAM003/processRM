@@ -5,7 +5,7 @@
   |  _ \\ _ __ ___   ___ ___  ___ ___|  _ \\|  \\/  |
   | |_) | '__/ _ \\ / __/ _ \\/ __/ __| |_) | |\\/| |
   |  __/| | | (_) | (_|  __/\\__ \\__ \\  _ <| |  | |
-  |_|   |_|  \\___/ \\___\\___||___/___/_| \\_\\_|  |_|
+  |_|   |_|  \\___/ \\___\\___||___/___/_| \\_\\_||_|
 
   processRM - RM Synthesis Pipeline Orchestrator
   RM-synthesis made simple
@@ -1018,6 +1018,9 @@ singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parall
     --casaContainer "$CASA_CONTAINER" \
     --rmContainer "$RM_CONTAINER" \
     --noiseMap "$NOISE_MAP" \
+    --mem "$MEM" \
+    --ncores "$NCORES" \
+    --internalChunk "$INTERNAL_CHUNK" \
     --createSbatch
 
 # Stage 3: Submit the RM synthesis array job (depends on noise stage if any).
@@ -1493,7 +1496,10 @@ WEIGHTTYPE=$(read_cfg rmsynth weighttype uniform)
 FIT_GAUSSIAN_RMSF=$(read_cfg rmsynth fit_gaussian_rmsf True)
 SKIP_RMSF=$(read_cfg rmsynth skip_rmsf False)
 SUPER_RESOLUTION=$(read_cfg rmsynth super_resolution False)
+MEM=$(read_cfg slurm mem 10)
 MEM_NOISE=$(read_cfg slurm mem_noise 100)
+NCORES=$(read_cfg rmclean ncores 1)
+INTERNAL_CHUNK=$(read_cfg rmclean internal_chunk '')
 
 echo "RM container:   $RM_CONTAINER"
 echo "CASA container: $CASA_CONTAINER"

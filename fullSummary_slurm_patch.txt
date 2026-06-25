@@ -1,0 +1,41 @@
+# ==============================================================
+# Patch for fullSummary on ilifu
+# Replace the entire "SLURM jobs" block in your current
+# /idia/projects/.../processRM_testing/fullSummary
+# with the snippet below.
+#
+# How to apply:
+#   nano fullSummary
+#   Ctrl-W   -> search:  ━━━ ACTIVE SLURM JOBS ━━━
+#   Delete the OLD block (from the `# SLURM jobs` comment
+#   down to the final `print()` after the per-task table).
+#   Paste the snippet between the dashed lines below in its place.
+#   Ctrl-O to save, Ctrl-X to exit.
+# ==============================================================
+
+
+# -------- SNIPPET START (copy from the next line) --------
+
+    # SLURM jobs - compact summary
+    print(f"{C.BOLD}━━━ ACTIVE SLURM JOBS ━━━{C.END}")
+    jobs = squeue_for_user()
+    relevant_jobs = [j for j in jobs if any(k in j['name'].lower()
+                                             for k in ['rmsy', 'merge', 'cube'])]
+
+    if not relevant_jobs:
+        print(f"  {C.GREY}No active SLURM jobs found.{C.END}")
+    else:
+        from collections import Counter
+        by_key = Counter((j['name'], j['state']) for j in relevant_jobs)
+        sample_time = {(j['name'], j['state']): j['time'] for j in relevant_jobs}
+        print(f"  {'NAME':<20} {'STATE':<10} {'COUNT':<7} {'~TIME':<10}")
+        print(f"  {'-'*20} {'-'*10} {'-'*7} {'-'*10}")
+        for (name, state), count in sorted(by_key.items()):
+            color = C.GREEN if state == 'RUNNING' else (
+                C.YELLOW if state == 'PENDING' else C.RED
+            )
+            print(f"  {color}{name:<20} {state:<10} {count:<7} "
+                  f"{sample_time[(name, state)]:<10}{C.END}")
+    print()
+
+# -------- SNIPPET END --------

@@ -160,12 +160,21 @@ def write_sbatch_file(args):
               "want the dirty FDF.")
         rmsynth_flags.append('-R')
     rmsynth_flag_str = ' '.join(rmsynth_flags)
+    
+    # Build rmclean flags: --ncores and --chunk (internal_chunk) if ncores > 1
+    rmclean_ncores_flag = ''
+    rmclean_chunk_flag = ''
+    if args.ncores > 1:
+        rmclean_ncores_flag = f'--ncores {args.ncores}'
+        if str(args.internalChunk).strip():
+            rmclean_chunk_flag = f'--chunk {args.internalChunk}'
+    
     sbatch_content = f'''#!/bin/bash
 #SBATCH --array=1-{args.parallel}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=10GB
+#SBATCH --mem={args.mem}GB
 #SBATCH --job-name=rmsy{args.jobNameSuffix}
 #SBATCH --output=logs/rmsy{args.jobNameSuffix}-%A-%a.out
 #SBATCH --error=logs/rmsy{args.jobNameSuffix}-%A-%a.err
@@ -228,7 +237,7 @@ if [ -f "$FDF_CLEAN" ]; then
 else
     echo "[Stage 3] Running rmclean3d for task $TASKID"
     t0=$SECONDS
-    singularity --quiet exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {rmclean_w_flag} {rmclean_n_flag} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
+    singularity --quiet exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {rmclean_w_flag} {rmclean_n_flag} {rmclean_ncores_flag} {rmclean_chunk_flag} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
     rc=$?
     log_stage "rmclean" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
 fi
@@ -367,6 +376,15 @@ Examples:
                         help='-R: skip writing the RMSF cube. DANGEROUS: rmclean3d '
                              'needs the RMSF and Stage 3 will fail without it. '
                              'True/False, default False.')
+    parser.add_argument('--mem', type=int, default=10,
+                        help='Memory per RM-synth/clean task in GB (default: 10). '
+                             'From [slurm] mem in config file.')
+    parser.add_argument('--ncores', type=int, default=1,
+                        help='Number of cores for multiprocessing per task (default: 1). '
+                             'From [rmclean] ncores in config file.')
+    parser.add_argument('--internalChunk', default='',
+                        help='Pixels per multiprocessing batch (only if ncores > 1). '
+                             'From [rmclean] internal_chunk in config file.')
     parser.add_argument('--start', action='store_true',
                         help='Submit the sbatch job to SLURM')
 

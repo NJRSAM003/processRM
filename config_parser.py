@@ -154,11 +154,20 @@ def validate_config(filename):
     # (e.g. -c -5 means 5-sigma threshold). Both are valid; reject only 0.
     threshold = validate_args(taskvals, 'rmclean', 'threshold', float, default=1e-6)
     iterations = validate_args(taskvals, 'rmclean', 'iterations', int, default=5000)
+    ncores = validate_args(taskvals, 'rmclean', 'ncores', int, default=1)
+    internal_chunk = validate_args(taskvals, 'rmclean', 'internal_chunk', str, default='')
     if threshold == 0:
         raise ValueError(f"Config error: [rmclean] threshold cannot be 0 "
                          f"(use positive Jy/beam/RMSF or negative N-sigma)")
     if iterations < 1:
         raise ValueError(f"Config error: [rmclean] iterations must be >= 1 (got {iterations})")
+    if ncores < 1:
+        raise ValueError(f"Config error: [rmclean] ncores must be >= 1 (got {ncores})")
+
+    # Validate [slurm] section — memory parameters
+    mem = validate_args(taskvals, 'slurm', 'mem', int, default=10)
+    if mem < 1:
+        raise ValueError(f"Config error: [slurm] mem must be >= 1 (got {mem})")
 
     return taskvals
 
