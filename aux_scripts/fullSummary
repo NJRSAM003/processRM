@@ -474,17 +474,13 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
     rmsynth = count_rmsynth(workdir)
     rmclean = count_rmclean(workdir)
 
-    # Chunk counter is a max() across signals; we kept Q/U .fits around for
-    # the chronological bars but a previous run with a different cube
-    # basename or chunk count can leave stale part_*_*stokesQ.fits behind,
-    # pushing chunked above total. Cap at total for the bar and surface the
-    # extras as a "+N stale" note so the user knows there's cleanup to do.
-    chunked = max(
-        count_chunked_inputs(workdir),
-        timings.get('chunking', {}).get('ok', 0) + timings.get('chunking', {}).get('skipped', 0),
-        rmsynth,
-        rmclean,
-    )
+    # Chunk counter uses only CURRENT-STATE signals -- the on-disk count
+    # plus rmsynth/rmclean as lower bounds (rmsynth can't have run without
+    # chunking, and its FDF outputs aren't deleted between runs). timings.csv
+    # is intentionally NOT consulted because it APPENDS rows across every
+    # re-submission, so after a couple of resumes it cumulates well past the
+    # actual chunk count and we end up reporting e.g. 3482/2000.
+    chunked = max(count_chunked_inputs(workdir), rmsynth, rmclean)
     extra_chunks = max(0, chunked - total_chunks)
     chunked_display = min(chunked, total_chunks)
     if 'chunking' in cancelled:
