@@ -77,18 +77,15 @@ def _on_compute_node():
     return bool(os.environ.get('SLURM_JOB_ID'))
 
 
-_SLURM_ACCOUNT_CACHE = []  # sentinel: empty = not resolved yet
+_SLURM_DEFAULT_ACCOUNT_CACHE = []  # sentinel: empty = not resolved yet
+_SLURM_VALID_ACCOUNTS_CACHE = []   # sentinel: empty = not resolved yet
+_SLURM_ACCOUNT_WARNED = set()      # preferred accounts we've already warned about
 
 
-def _resolve_slurm_account():
-    """Look up the user's default SLURM account from `sacctmgr`.
-
-    Cached for the lifetime of the process so we don't re-query for each of
-    the 3-4 BUILD validation calls. Returns None if sacctmgr is missing,
-    times out, or has no DefaultAccount for this user.
-    """
-    if _SLURM_ACCOUNT_CACHE:
-        return _SLURM_ACCOUNT_CACHE[0]
+def _slurm_default_account():
+    """User's DefaultAccount from `sacctmgr`. Cached per process."""
+    if _SLURM_DEFAULT_ACCOUNT_CACHE:
+        return _SLURM_DEFAULT_ACCOUNT_CACHE[0]
     user = os.environ.get('USER', '')
     account = None
     if user:
@@ -103,11 +100,72 @@ def _resolve_slurm_account():
                     account = first[0].strip()
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
-    _SLURM_ACCOUNT_CACHE.append(account)
+    _SLURM_DEFAULT_ACCOUNT_CACHE.append(account)
     return account
 
 
-def _container_python(container_path, code, timeout=180):
+def _slurm_valid_accounts():
+    """Every SLURM account this user can submit under, from `sacctmgr`.
+    Returns [] if sacctmgr is unavailable (in which case we can't validate
+    the user's choice and silently accept it)."""
+    if _SLURM_VALID_ACCOUNTS_CACHE:
+        return _SLURM_VALID_ACCOUNTS_CACHE[0]
+    user = os.environ.get('USER', '')
+    accounts = []
+    if user:
+        try:
+            result = subprocess.run(
+                ['sacctmgr', '-nP', 'show', 'association',
+                 f'user={user}', 'format=Account'],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                seen = set()
+                for line in (result.stdout or '').splitlines():
+                    acct = line.strip()
+                    if acct and acct not in seen:
+                        seen.add(acct)
+                        accounts.append(acct)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    _SLURM_VALID_ACCOUNTS_CACHE.append(accounts)
+    return accounts
+
+
+def _resolve_slurm_account(preferred=None):
+    """Pick the SLURM account to use for an srun-wrapped container exec.
+
+    Priority:
+      1. `preferred` (typically the config's [slurm] account) -- used as-is
+         when sacctmgr can't enumerate the user's accounts (we trust the
+         user) or when it's in the user's valid list.
+      2. If `preferred` is given but is NOT in the user's valid list, warn
+         (once per preferred value) and fall back to the user's
+         DefaultAccount.
+      3. If `preferred` is empty/None, return the DefaultAccount.
+
+    Returns None if no account can be determined at all.
+    """
+    preferred = (preferred or '').strip().strip("'\"") or None
+    if preferred is None:
+        return _slurm_default_account()
+    valid = _slurm_valid_accounts()
+    if not valid or preferred in valid:
+        return preferred
+    if preferred not in _SLURM_ACCOUNT_WARNED:
+        _SLURM_ACCOUNT_WARNED.add(preferred)
+        default = _slurm_default_account()
+        logger.warning(
+            f"  -> SLURM account '{preferred}' from the config is NOT in "
+            f"your list of valid accounts ({', '.join(valid)}). "
+            f"Falling back to your default account "
+            f"({default if default else 'unknown'}). Edit [slurm] account "
+            f"in the config to one of the valid accounts to silence this."
+        )
+    return _slurm_default_account()
+
+
+def _container_python(container_path, code, timeout=180, account=None):
     """Run a Python snippet inside the rm-env container; return stdout (str).
 
     On a compute node (``$SLURM_JOB_ID`` is set) we call singularity exec
@@ -115,6 +173,10 @@ def _container_python(container_path, code, timeout=180):
     on a compute node and stdout streams back to the caller's terminal --
     ilifu login nodes don't grant user-namespace mappings, so a direct
     singularity exec there would always fail.
+
+    ``account`` (optional) is the preferred SLURM account from the config;
+    if the user doesn't have access to it we fall back to their default
+    (and warn once). Pass None to always use the default.
 
     Raises:
       FileNotFoundError       -- container_path doesn't exist, or singularity
@@ -133,7 +195,7 @@ def _container_python(container_path, code, timeout=180):
     else:
         # Login node -> srun a tiny compute slot. Defaults match
         # processMeerKAT's lightweight validation jobs: 1 CPU, 2 GB, 5 min.
-        account = _resolve_slurm_account()
+        account = _resolve_slurm_account(preferred=account)
         if account is None:
             raise _LoginNodeUnsupported(
                 "BUILD-time validation needs to run on a compute node but "
@@ -177,8 +239,11 @@ def _container_python(container_path, code, timeout=180):
     return result.stdout
 
 
-def _validate_cube_via_container(container_path, cube_path, freqlist_path):
+def _validate_cube_via_container(container_path, cube_path, freqlist_path, account=None):
     """Re-run cube_validator.validate_freqlist_against_cube inside the container.
+
+    ``account`` (optional): preferred SLURM account from the config; falls
+    back to user's default if not in the user's valid-accounts list.
 
     Returns the same dict structure the local helper does. Raises
     ``cube_validator.CubeStructureError`` if the validation failed inside the
@@ -195,14 +260,14 @@ def _validate_cube_via_container(container_path, cube_path, freqlist_path):
         "except cube_validator.CubeStructureError as e:\n"
         "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
     )
-    stdout = _container_python(container_path, code)
+    stdout = _container_python(container_path, code, account=account)
     payload = json.loads(stdout.strip().splitlines()[-1])
     if not payload['ok']:
         raise cube_validator.CubeStructureError(payload['error'])
     return payload['info']
 
 
-def _has_beam_info_via_container(container_path, cube_path):
+def _has_beam_info_via_container(container_path, cube_path, account=None):
     """Re-run cube_validator.has_beam_info inside the container."""
     code = (
         "import sys, json\n"
@@ -210,22 +275,22 @@ def _has_beam_info_via_container(container_path, cube_path):
         "import cube_validator\n"
         f"print(json.dumps(cube_validator.has_beam_info({cube_path!r})))\n"
     )
-    stdout = _container_python(container_path, code)
+    stdout = _container_python(container_path, code, account=account)
     return json.loads(stdout.strip().splitlines()[-1])
 
 
-def _naxis2_via_container(container_path, cube_path):
+def _naxis2_via_container(container_path, cube_path, account=None):
     """Return NAXIS2 (image height in pixels) read inside the container."""
     code = (
         "import json\n"
         "from astropy.io import fits\n"
         f"print(json.dumps(int(fits.getheader({cube_path!r})['NAXIS2'])))\n"
     )
-    stdout = _container_python(container_path, code)
+    stdout = _container_python(container_path, code, account=account)
     return json.loads(stdout.strip().splitlines()[-1])
 
 
-def _transpose_cube_via_container(container_path, cube_path):
+def _transpose_cube_via_container(container_path, cube_path, account=None):
     """Run cube_validator.transpose_cube_in_place inside the container.
 
     Returns True if a transpose actually happened, False otherwise.
@@ -237,11 +302,11 @@ def _transpose_cube_via_container(container_path, cube_path):
         f"changed = cube_validator.transpose_cube_in_place({cube_path!r})\n"
         "print(json.dumps(bool(changed)))\n"
     )
-    stdout = _container_python(container_path, code, timeout=600)
+    stdout = _container_python(container_path, code, timeout=600, account=account)
     return json.loads(stdout.strip().splitlines()[-1])
 
 
-def _parse_region_via_container(container_path, region_path, cube_path):
+def _parse_region_via_container(container_path, region_path, cube_path, account=None):
     """Re-run region_parser.parse_region_file inside the container.
 
     Loads the cube's WCS header inside the container so world-coord regions
@@ -257,7 +322,7 @@ def _parse_region_via_container(container_path, region_path, cube_path):
         f"regs = region_parser.parse_region_file({region_path!r}, hdr)\n"
         "print(json.dumps(regs))\n"
     )
-    stdout = _container_python(container_path, code)
+    stdout = _container_python(container_path, code, account=account)
     return json.loads(stdout.strip().splitlines()[-1])
 
 
@@ -761,7 +826,8 @@ def build_config_from_args(args, workdir):
     return config_path
 
 
-def _check_beam_for_sigma(cube_path, taskvals, config_path, hard, rm_container_path=None):
+def _check_beam_for_sigma(cube_path, taskvals, config_path, hard,
+                          rm_container_path=None, account=None):
     """Verify that the cube has the beam metadata PyBDSF needs to build a
     noise map, but ONLY when the config asks for sigma cleaning AND no
     pre-computed noise map is supplied.
@@ -793,7 +859,8 @@ def _check_beam_for_sigma(cube_path, taskvals, config_path, hard, rm_container_p
             beam = None
         else:
             try:
-                beam = _has_beam_info_via_container(rm_container_path, cube_path)
+                beam = _has_beam_info_via_container(rm_container_path, cube_path,
+                                                    account=account)
             except _LoginNodeUnsupported as e:
                 if not hard:
                     logger.warning(f"  -> skipping BUILD-time beam-info check: {e}")
@@ -1625,6 +1692,11 @@ def materialize_workdir_from_config(config_path, workdir):
     freqlist_basename = (data_now.get('freqlist') or '').strip()
     rm_container_now = (all_now.get('slurm', {}).get('rm_container') or '').strip() \
                        or os.path.join(SCRIPT_DIR, 'container', 'rm-env.sif')
+    # [CHANGE 2026-06-25]: prefer the SLURM account written in the config for
+    # the srun-wrapped validation calls below. _resolve_slurm_account warns
+    # (once) and falls back to the user's DefaultAccount if it isn't in the
+    # valid-accounts list.
+    account_now = (all_now.get('slurm', {}).get('account') or '').strip() or None
 
     if primary_basename and freqlist_basename:
         primary_path = os.path.join(workdir, primary_basename)
@@ -1637,7 +1709,8 @@ def materialize_workdir_from_config(config_path, workdir):
                 # Fall back to the container
                 try:
                     info = _validate_cube_via_container(
-                        rm_container_now, primary_path, freqlist_path
+                        rm_container_now, primary_path, freqlist_path,
+                        account=account_now,
                     )
                 except FileNotFoundError as fe:
                     logger.error(f"Cannot validate cube: container not found at {fe}. "
@@ -1671,7 +1744,8 @@ def materialize_workdir_from_config(config_path, workdir):
                 try:
                     cube_validator.transpose_cube_in_place(primary_path, info)
                 except (ImportError, ModuleNotFoundError):
-                    _transpose_cube_via_container(rm_container_now, primary_path)
+                    _transpose_cube_via_container(rm_container_now, primary_path,
+                                                  account=account_now)
             except Exception as e:
                 logger.error(f"Auto-transpose failed: {e}")
                 cleanup_run_artifacts(workdir, keep_config=config_path)
@@ -1681,7 +1755,8 @@ def materialize_workdir_from_config(config_path, workdir):
         # for sigma cleaning and the cube has no beam metadata, refuse to
         # submit; the noise stage would crash inside SLURM.
         _check_beam_for_sigma(primary_path, all_now, config_path, hard=True,
-                              rm_container_path=rm_container_now)
+                              rm_container_path=rm_container_now,
+                              account=account_now)
 
     # Subdirectories — only now that we know we will actually run
     for sub in ['logs', 'processing', 'errors']:
@@ -1716,7 +1791,8 @@ def materialize_workdir_from_config(config_path, workdir):
             if 'no cube WCS was supplied' in str(e):
                 try:
                     regions = _parse_region_via_container(
-                        rm_container_now, region_full, cube_full
+                        rm_container_now, region_full, cube_full,
+                        account=account_now,
                     )
                 except FileNotFoundError as fe:
                     logger.error(f"Cannot parse region file: container not found at {fe}.")
