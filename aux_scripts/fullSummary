@@ -441,16 +441,27 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
     display_path = rel if rel == '.' else './' + rel
     print(f"{C.BOLD}{C.CYAN}━━━ {label} ━━━{C.END}  ({display_path})")
 
-    def stage_colour(stage):
-        return C.YELLOW if stage in cancelled else C.CYAN
+    # Cancelled stage -> render bar AND " (cancelled)" suffix in red.
+    # HDF5 inherits cancellation from merge (no merged FITS -> nothing to
+    # convert, and fits2idia runs inside the same SLURM job as merge anyway).
+    cancelled = set(cancelled)
+    if 'merge' in cancelled:
+        cancelled.add('hdf5')
+
+    def stage_render(stage, done, total, label):
+        if stage in cancelled:
+            colour = C.RED
+            suffix = ' (cancelled)'
+        else:
+            colour = C.CYAN
+            suffix = ''
+        print(f"  {colour}{bar(done, total, label=label)}{suffix}{C.END}")
 
     extract_done, extract_total = count_extraction(workdir)
-    print(f"  {stage_colour('extract')}{bar(extract_done, extract_total, label='Extraction')}"
-          f"{' (CANCELLED)' if 'extract' in cancelled else ''}{C.END}")
+    stage_render('extract', extract_done, extract_total, 'Extraction')
 
     noise_done, noise_total = count_noise(workdir)
-    print(f"  {stage_colour('noise')}{bar(noise_done, noise_total, label='Noise map')}"
-          f"{' (CANCELLED)' if 'noise' in cancelled else ''}{C.END}")
+    stage_render('noise', noise_done, noise_total, 'Noise map')
 
     timings = read_timings(workdir)
 
@@ -469,32 +480,27 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
         rmsynth,
         rmclean,
     )
-    print(f"  {stage_colour('chunking')}{bar(chunked, total_chunks, label='Chunking')}"
-          f"{' (CANCELLED)' if 'chunking' in cancelled else ''}{C.END}")
-
-    print(f"  {stage_colour('rmsynth')}{bar(rmsynth, total_chunks, label='RM Synthesis')}"
-          f"{' (CANCELLED)' if 'rmsynth' in cancelled else ''}{C.END}")
-
-    print(f"  {stage_colour('rmclean')}{bar(rmclean, total_chunks, label='RM Clean')}"
-          f"{' (CANCELLED)' if 'rmclean' in cancelled else ''}{C.END}")
+    stage_render('chunking', chunked, total_chunks, 'Chunking')
+    stage_render('rmsynth', rmsynth, total_chunks, 'RM Synthesis')
+    stage_render('rmclean', rmclean, total_chunks, 'RM Clean')
 
     # Merged outputs exist even when merge FAILED (make_empty_image runs first),
-    # so a 15/15 bar can be entirely misleading. Cross-check timings.csv and
-    # paint the bar red when any merge tasks failed.
+    # so a 15/15 bar can be entirely misleading. Cross-check timings.csv:
+    # cancelled wins (red + "(cancelled)"); otherwise paint by FAIL count.
     merged_count, merged_total, merged_files = count_merged(workdir)
     merge_fail = timings.get('merge', {}).get('fail', 0)
     merge_ok = timings.get('merge', {}).get('ok', 0)
-    if merge_fail and merge_ok == 0:
+    if 'merge' in cancelled:
+        merge_colour = C.RED
+        merge_suffix = ' (cancelled)'
+    elif merge_fail and merge_ok == 0:
         merge_colour = C.RED
         merge_suffix = f' (all {merge_fail} merge tasks FAILED -- outputs are wrong size)'
     elif merge_fail:
         merge_colour = C.YELLOW
         merge_suffix = f' ({merge_fail} merge task(s) failed -- check errors)'
-    elif 'merge' in cancelled:
-        merge_colour = C.YELLOW
-        merge_suffix = ' (CANCELLED)'
     else:
-        merge_colour = stage_colour('merge')
+        merge_colour = C.CYAN
         merge_suffix = ''
     print(f"  {merge_colour}{bar(merged_count, merged_total, label='Merging')}"
           f"{merge_suffix}{C.END}")
@@ -503,8 +509,16 @@ def _render_progress_block(label, workdir, total_chunks, cancelled):
     # tracks the count of merged FITS currently on disk, so this bar fills
     # in lockstep with Merging.
     hdf5_done, hdf5_total = count_hdf5(workdir)
-    hdf5_colour = C.CYAN if hdf5_done == hdf5_total else C.YELLOW
-    print(f"  {hdf5_colour}{bar(hdf5_done, hdf5_total, label='HDF5')}{C.END}")
+    if 'hdf5' in cancelled:
+        hdf5_colour = C.RED
+        hdf5_suffix = ' (cancelled)'
+    elif hdf5_done == hdf5_total:
+        hdf5_colour = C.CYAN
+        hdf5_suffix = ''
+    else:
+        hdf5_colour = C.YELLOW
+        hdf5_suffix = ''
+    print(f"  {hdf5_colour}{bar(hdf5_done, hdf5_total, label='HDF5')}{hdf5_suffix}{C.END}")
     return merged_files
 
 
