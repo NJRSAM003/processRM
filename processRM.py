@@ -964,8 +964,12 @@ if [ -n "$NOISE_MAP_CFG" ]; then
     echo "[Stage 1.5] Using pre-supplied noise map from config: $NOISE_MAP_CFG"
     NOISE_MAP="$NOISE_MAP_CFG"
 elif awk "BEGIN{exit !($THRESHOLD < 0)}"; then
-    echo "[Stage 1.5] Submitting make_noise.sbatch (sigma mode, threshold=$THRESHOLD)..."
-    cat > make_noise.sbatch <<NOISEEOF
+    if [ -f "$NOISE_MAP" ]; then
+        # Re-run: noise map from a previous submission is still on disk.
+        echo "[Stage 1.5] $NOISE_MAP already exists -- skipping noise generation."
+    else
+        echo "[Stage 1.5] Submitting make_noise.sbatch (sigma mode, threshold=$THRESHOLD)..."
+        cat > make_noise.sbatch <<NOISEEOF
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -984,8 +988,9 @@ cd "$WORKDIR"
 singularity --quiet exec "$RM_CONTAINER" python -m RMtools_3D.make_noise_map \
     "$FITS_Q" "$FITS_U" -o "$NOISE_MAP" -B "$FITS_FULL" -v
 NOISEEOF
-    SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
-    echo "  -> Noise-map job: SLURM $SLURMID_NOISE"
+        SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
+        echo "  -> Noise-map job: SLURM $SLURMID_NOISE"
+    fi
 else
     echo "[Stage 1.5] Absolute-threshold mode (threshold=$THRESHOLD); skipping noise stage."
     NOISE_MAP=""
@@ -1015,15 +1020,34 @@ singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parall
     --noiseMap "$NOISE_MAP" \
     --createSbatch
 
-# Stage 3: Submit the RM synthesis array job (depends on noise stage if any)
+# Stage 3: Submit the RM synthesis array job (depends on noise stage if any).
+# Resume-aware: pre-scan processing/ for already-complete chunks
+# (FDF_clean_tot.fits present) and submit only the MISSING task IDs via
+# `sbatch --array=<missing>`. That way a re-run with one OOMed chunk only
+# asks SLURM for one mem_chunk allocation instead of all CHUNKS.
 echo ""
-echo "[Stage 3] Submitting RM synthesis array job..."
+echo "[Stage 3] Pre-scanning processing/ for already-complete chunks..."
+MISSING=""
+for i in $(seq 1 $CHUNKS); do
+    [ -f "processing/part_${i}_FDF_clean_tot.fits" ] || MISSING="${MISSING}${i},"
+done
+MISSING="${MISSING%,}"
+NUM_MISSING=$([ -z "$MISSING" ] && echo 0 || echo "$MISSING" | tr ',' '\n' | wc -l)
 DEP_RMSY=""
 # --kill-on-invalid-dep=yes so SLURM auto-cancels rmsy if the noise job
 # fails, instead of leaving it pending with DependencyNeverSatisfied.
 [ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE --kill-on-invalid-dep=yes"
-SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
-echo "  -> RM synthesis array: SLURM job $SLURMID_RMSY ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
+if [ "$NUM_MISSING" = "0" ]; then
+    echo "[Stage 3] All $CHUNKS chunks already complete -- skipping rmsy submission."
+    SLURMID_RMSY=""
+elif [ "$NUM_MISSING" = "$CHUNKS" ]; then
+    echo "[Stage 3] All $CHUNKS chunks need processing; submitting full array..."
+    SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+else
+    echo "[Stage 3] $NUM_MISSING of $CHUNKS chunks missing; submitting trimmed array..."
+    SLURMID_RMSY=$(sbatch $DEP_RMSY --array="$MISSING" run_parallel_rmsy.sbatch | awk '{print $4}')
+fi
+echo "  -> RM synthesis array: SLURM job ${SLURMID_RMSY:-(none submitted)} ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
 
 # Stage 4: Write a merge-prep SLURM job that depends on Stage 3 finishing.
 echo ""
@@ -1095,8 +1119,12 @@ else
     echo "[merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
 MPEOF
-SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes merge_prep.sbatch | awk '{print $4}')
-echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
+# Only condition merge_prep on rmsy if rmsy was actually submitted; if every
+# chunk was already complete (SLURMID_RMSY empty), run merge_prep immediately.
+DEP_MERGE=""
+[ -n "$SLURMID_RMSY" ] && DEP_MERGE="--dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes"
+SLURMID_MERGEPREP=$(sbatch $DEP_MERGE merge_prep.sbatch | awk '{print $4}')
+echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP ${DEP_MERGE:+(depends on $SLURMID_RMSY)}"
 SLURMID_MERGE="$SLURMID_MERGEPREP"
 
 write_kill () {
@@ -1201,8 +1229,11 @@ for i in "${!REGION_IDS[@]}"; do
         echo "[r${RID} Stage 1.5] Using pre-supplied noise map: $NOISE_MAP_CFG"
         R_NOISE_MAP="$NOISE_MAP_CFG"
     elif awk "BEGIN{exit !($THRESHOLD < 0)}"; then
-        echo "[r${RID} Stage 1.5] Submitting make_noise.sbatch (sigma mode)"
-        cat > make_noise.sbatch <<NOISEEOF
+        if [ -f "$R_NOISE_MAP" ]; then
+            echo "[r${RID} Stage 1.5] $R_NOISE_MAP already exists -- skipping noise generation."
+        else
+            echo "[r${RID} Stage 1.5] Submitting make_noise.sbatch (sigma mode)"
+            cat > make_noise.sbatch <<NOISEEOF
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -1221,9 +1252,10 @@ cd "$WORKDIR/$REGION_DIR"
 singularity --quiet exec "$RM_CONTAINER" python -m RMtools_3D.make_noise_map \
     "$R_FITS_Q" "$R_FITS_U" -o "$R_NOISE_MAP" -B "$FITS_FULL" -v
 NOISEEOF
-        SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
-        ALL_NOISE_IDS="$ALL_NOISE_IDS $SLURMID_NOISE"
-        echo "[r${RID} Stage 1.5] Noise-map job: SLURM $SLURMID_NOISE"
+            SLURMID_NOISE=$(sbatch make_noise.sbatch | awk '{print $4}')
+            ALL_NOISE_IDS="$ALL_NOISE_IDS $SLURMID_NOISE"
+            echo "[r${RID} Stage 1.5] Noise-map job: SLURM $SLURMID_NOISE"
+        fi
     else
         echo "[r${RID} Stage 1.5] Absolute-threshold mode; skipping noise stage."
         R_NOISE_MAP=""
@@ -1253,14 +1285,32 @@ NOISEEOF
         --jobNameSuffix "$SUFFIX" \
         --createSbatch
 
-    # Stage 3 (per region): submit rmsy array (depends on noise stage if any)
+    # Stage 3 (per region): submit rmsy array (depends on noise stage if any).
+    # Resume-aware: pre-scan processing/ for already-complete chunks and submit
+    # only the MISSING task IDs so a re-run with one OOMed chunk doesn't ask
+    # SLURM to allocate mem_chunk for the whole region's array.
+    MISSING=""
+    for i in $(seq 1 $CHUNKS); do
+        [ -f "processing/part_${i}_FDF_clean_tot.fits" ] || MISSING="${MISSING}${i},"
+    done
+    MISSING="${MISSING%,}"
+    NUM_MISSING=$([ -z "$MISSING" ] && echo 0 || echo "$MISSING" | tr ',' '\n' | wc -l)
     DEP_RMSY=""
     # --kill-on-invalid-dep=yes so rmsy self-cancels if the per-region noise
     # job fails, instead of squatting in the queue forever.
     [ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE --kill-on-invalid-dep=yes"
-    SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
-    echo "[r${RID} Stage 3] RM synthesis array: SLURM job $SLURMID_RMSY ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
-    ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
+    if [ "$NUM_MISSING" = "0" ]; then
+        echo "[r${RID} Stage 3] All $CHUNKS chunks already complete -- skipping rmsy submission."
+        SLURMID_RMSY=""
+    elif [ "$NUM_MISSING" = "$CHUNKS" ]; then
+        echo "[r${RID} Stage 3] All $CHUNKS chunks need processing; submitting full array..."
+        SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+    else
+        echo "[r${RID} Stage 3] $NUM_MISSING of $CHUNKS chunks missing; submitting trimmed array..."
+        SLURMID_RMSY=$(sbatch $DEP_RMSY --array="$MISSING" run_parallel_rmsy.sbatch | awk '{print $4}')
+    fi
+    [ -n "$SLURMID_RMSY" ] && ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
+    echo "[r${RID} Stage 3] RM synthesis array: SLURM job ${SLURMID_RMSY:-(none submitted)} ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
 
     # Stage 4 (per region): merge-prep dependent on this region's rmsy completing.
     # The merge step uses the input cube's NAXIS1/NAXIS2 to allocate its output
@@ -1328,8 +1378,10 @@ else
     echo "[r${RID} merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
 MPEOF
-    SLURMID_MERGEPREP=$(sbatch --dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes merge_prep.sbatch | awk '{print $4}')
-    echo "[r${RID} Stage 4] Merge prep: SLURM job $SLURMID_MERGEPREP (depends on $SLURMID_RMSY)"
+    DEP_MERGE=""
+    [ -n "$SLURMID_RMSY" ] && DEP_MERGE="--dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes"
+    SLURMID_MERGEPREP=$(sbatch $DEP_MERGE merge_prep.sbatch | awk '{print $4}')
+    echo "[r${RID} Stage 4] Merge prep: SLURM job $SLURMID_MERGEPREP ${DEP_MERGE:+(depends on $SLURMID_RMSY)}"
     ALL_MERGEPREP_IDS="$ALL_MERGEPREP_IDS $SLURMID_MERGEPREP"
 
     cd "$WORKDIR"
