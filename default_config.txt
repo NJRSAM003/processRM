@@ -25,7 +25,6 @@ pointing = ''                     # Optional crop centre "[x, y]" in px; require
 [chunking]
 parallel = 100                    # Total SLURM array size (chunks)
 chunks = 100                      # Number of chunks to process (<= parallel)
-resume_safe = True                # Skip stages with existing output on re-run
 
 # Full help:  singularity exec ~/processRM/container/rm-env.sif rmsynth3d --help
 [rmsynth]
@@ -79,3 +78,4 @@ fix_invalid_stokes = True         # Patch CRVAL4=0 on FDF_tot/RMSF_tot so CARTA 
 [run]
 continue = True
 stages = ['extract', 'rmsynth', 'rmclean', 'merge']
+resume_safe = True                # Skip stages with existing output on re-run
