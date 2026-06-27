@@ -169,17 +169,31 @@ def write_sbatch_file(args):
         if str(args.internalChunk).strip():
             rmclean_chunk_flag = f'--chunk {args.internalChunk}'
     
+    # Resolve which of {extract, rmsynth, rmclean} this sbatch should actually
+    # run. The 'extract' stage maps to Stage 1 chunking inside this script.
+    def _str_to_bool_local(s):
+        return str(s).strip().lower() in ('true', '1', 'yes', 'on')
+    try:
+        import ast as _ast
+        stages_set = set(_ast.literal_eval(args.stages))
+    except Exception:
+        stages_set = {{'extract', 'rmsynth', 'rmclean', 'merge'}}
+    run_extract = 'extract' in stages_set
+    run_rmsynth = 'rmsynth' in stages_set
+    run_rmclean = 'rmclean' in stages_set
+    resume_on = _str_to_bool_local(args.resume)
+
     sbatch_content = f'''#!/bin/bash
 #SBATCH --array=1-{args.parallel}
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes={args.nodes}
+#SBATCH --ntasks-per-node={args.ntasksPerNode}
+#SBATCH --cpus-per-task={args.cpusPerTask}
 #SBATCH --mem={args.mem}GB
 #SBATCH --job-name=rmsy{args.jobNameSuffix}
 #SBATCH --output=logs/rmsy{args.jobNameSuffix}-%A-%a.out
 #SBATCH --error=logs/rmsy{args.jobNameSuffix}-%A-%a.err
-#SBATCH --partition=Main
-#SBATCH --time=10:00:00
+#SBATCH --partition={args.partition}
+#SBATCH --time={args.time}
 #SBATCH --account={args.account}
 
 cat /etc/hostname
@@ -206,40 +220,47 @@ log_stage() {{
     echo "${{SLURM_ARRAY_JOB_ID}},${{TASKID}},${{stage}},${{duration}},${{status}},$(date -Iseconds)" >> "$TIMING_LOG"
 }}
 
-# Stage 1: Chunk input cubes (skip if already done)
-if [ -f "$Q_CHUNK" ] && [ -f "$U_CHUNK" ]; then
-    echo "[Stage 1] SKIP — chunks already exist for task $TASKID"
-    log_stage "chunking" "0" "skipped"
-else
-    echo "[Stage 1] Chunking inputs for task $TASKID"
-    t0=$SECONDS
-    singularity --quiet exec {args.casaContainer} python3 {__file__} --parallel {args.parallel} --slurmArrayTaskId ${{TASKID}} --inputFitsStokesQ {args.inputFitsStokesQ} --inputFitsStokesU {args.inputFitsStokesU} --freqList {args.freqList} --casaContainer {args.casaContainer} --rmContainer {args.rmContainer} --noiseMap "{args.noiseMap}"
-    rc=$?
-    log_stage "chunking" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
+# Stage 1: Chunk input cubes (gated by [run] stages='extract')
+{'' if run_extract else '# SKIPPED by [run] stages: extract not requested.'}
+{'if true; then' if run_extract else 'if false; then'}
+    if {'true' if resume_on else 'false'} && [ -f "$Q_CHUNK" ] && [ -f "$U_CHUNK" ]; then
+        echo "[Stage 1] SKIP — chunks already exist for task $TASKID"
+        log_stage "chunking" "0" "skipped"
+    else
+        echo "[Stage 1] Chunking inputs for task $TASKID"
+        t0=$SECONDS
+        singularity --quiet exec {args.casaContainer} python3 {__file__} --parallel {args.parallel} --slurmArrayTaskId ${{TASKID}} --inputFitsStokesQ {args.inputFitsStokesQ} --inputFitsStokesU {args.inputFitsStokesU} --freqList {args.freqList} --casaContainer {args.casaContainer} --rmContainer {args.rmContainer} --noiseMap "{args.noiseMap}"
+        rc=$?
+        log_stage "chunking" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
+    fi
 fi
 
-# Stage 2: RM synthesis (skip if FDF_tot_dirty exists)
-if [ -f "$FDF_DIRTY" ]; then
-    echo "[Stage 2] SKIP — RM synthesis already done for task $TASKID"
-    log_stage "rmsynth" "0" "skipped"
-else
-    echo "[Stage 2] Running rmsynth3d for task $TASKID"
-    t0=$SECONDS
-    singularity --quiet exec {args.rmContainer} rmsynth3d {rmsynth_flag_str} "$Q_CHUNK" "$U_CHUNK" {args.freqList} {rmsynth_n_flag} -o part_${{TASKID}}_
-    rc=$?
-    log_stage "rmsynth" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
+# Stage 2: RM synthesis (gated by [run] stages='rmsynth')
+{'if true; then' if run_rmsynth else 'if false; then'}
+    if {'true' if resume_on else 'false'} && [ -f "$FDF_DIRTY" ]; then
+        echo "[Stage 2] SKIP — RM synthesis already done for task $TASKID"
+        log_stage "rmsynth" "0" "skipped"
+    else
+        echo "[Stage 2] Running rmsynth3d for task $TASKID"
+        t0=$SECONDS
+        singularity --quiet exec {args.rmContainer} rmsynth3d {rmsynth_flag_str} "$Q_CHUNK" "$U_CHUNK" {args.freqList} {rmsynth_n_flag} -o part_${{TASKID}}_
+        rc=$?
+        log_stage "rmsynth" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
+    fi
 fi
 
-# Stage 3: RM clean (skip if FDF_clean_tot exists)
-if [ -f "$FDF_CLEAN" ]; then
-    echo "[Stage 3] SKIP — RM clean already done for task $TASKID"
-    log_stage "rmclean" "0" "skipped"
-else
-    echo "[Stage 3] Running rmclean3d for task $TASKID"
-    t0=$SECONDS
-    singularity --quiet exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {rmclean_w_flag} {rmclean_n_flag} {rmclean_ncores_flag} {rmclean_chunk_flag} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
-    rc=$?
-    log_stage "rmclean" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
+# Stage 3: RM clean (gated by [run] stages='rmclean')
+{'if true; then' if run_rmclean else 'if false; then'}
+    if {'true' if resume_on else 'false'} && [ -f "$FDF_CLEAN" ]; then
+        echo "[Stage 3] SKIP — RM clean already done for task $TASKID"
+        log_stage "rmclean" "0" "skipped"
+    else
+        echo "[Stage 3] Running rmclean3d for task $TASKID"
+        t0=$SECONDS
+        singularity --quiet exec {args.rmContainer} rmclean3d -c {args.rmsyCleanThrethold} -n {args.rmsyCleanIterations} -g {args.rmsyCleanGain} {rmclean_w_flag} {rmclean_n_flag} {rmclean_ncores_flag} {rmclean_chunk_flag} "$FDF_DIRTY" processing/part_${{TASKID}}_RMSF_tot.fits -o part_${{TASKID}}_
+        rc=$?
+        log_stage "rmclean" "$((SECONDS - t0))" "$([ $rc -eq 0 ] && echo OK || echo FAIL)"
+    fi
 fi
 
 # Drop only the CASA .im intermediate directories (these are large and
@@ -385,6 +406,22 @@ Examples:
     parser.add_argument('--internalChunk', default='',
                         help='Pixels per multiprocessing batch (only if ncores > 1). '
                              'From [rmclean] internal_chunk in config file.')
+    parser.add_argument('--partition', default='Main',
+                        help='SLURM partition. From [slurm] partition in config file.')
+    parser.add_argument('--time', default='10:00:00',
+                        help='SLURM walltime per chunk. From [slurm] time in config file.')
+    parser.add_argument('--nodes', default='1',
+                        help='SLURM --nodes. From [slurm] nodes in config file.')
+    parser.add_argument('--ntasksPerNode', default='1',
+                        help='SLURM --ntasks-per-node. From [slurm] ntasks_per_node in config file.')
+    parser.add_argument('--cpusPerTask', default='1',
+                        help='SLURM --cpus-per-task. From [slurm] cpus_per_task in config file.')
+    parser.add_argument('--stages', default="['extract', 'rmsynth', 'rmclean', 'merge']",
+                        help="Python-list-literal of stages to run, e.g. \"['rmsynth','rmclean']\". "
+                             "From [run] stages in config file.")
+    parser.add_argument('--resume', default='True',
+                        help='Skip stages whose outputs already exist. From [run] resume_safe '
+                             'AND [run] continue in config file.')
     parser.add_argument('--start', action='store_true',
                         help='Submit the sbatch job to SLURM')
 

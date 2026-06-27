@@ -203,7 +203,7 @@ def fill_cube_with_images(outputName, listing_all_parts, initial_fits_header):
     print(f"Cube filled OK: {cubeNameOutput} (rows assembled: {y_height})")
 
 
-def create_all_cubes(inputcube, slurmArrayTaskId):
+def create_all_cubes(inputcube, slurmArrayTaskId, run_fits2idia=True, fix_invalid_stokes=True):
     # get CRPIx value and x, y length
     cubeNameInput = inputcube
     hduCubeInput = fits.open(cubeNameInput, memmap=True, mode="update")
@@ -270,31 +270,36 @@ def create_all_cubes(inputcube, slurmArrayTaskId):
     for inputName in listing_basenames:
         fill_cube_with_images(inputName, listing_all_parts, initial_fits_header)
 
-    # Apply Stokes-axis fix BEFORE fits2idia conversion
-    for inputName in listing_basenames:
-        fix_invalid_stokes_axis(inputName)
+    # Apply Stokes-axis fix BEFORE fits2idia conversion (gated by [merge] fix_invalid_stokes).
+    if fix_invalid_stokes:
+        for inputName in listing_basenames:
+            fix_invalid_stokes_axis(inputName)
+    else:
+        print("[merge] fix_invalid_stokes=False -> skipping CRVAL4 patch.")
 
-    # [CHANGE 2026-06-23]: drop the nested `singularity exec` wrap around
-    # fits2idia. merge_image_parts.py itself is already invoked via
-    # `singularity exec rm-env.sif python3 ./merge_image_parts.py ...` by
-    # the sbatch, so fits2idia is already on PATH inside the container.
-    # Trying to nest another singularity exec from inside a Singularity
-    # container fails silently (no namespace to spawn into), which is
-    # why .hdf5 files were never landing next to the merged FITS.
-    for inputName in listing_basenames:
-        command = f"fits2idia -s -p {inputName}"
-        print(f"Command: {command}")
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                universal_newlines=True, shell=True)
-        if result.stdout:
-            print(result.stdout.strip())
-        if result.stderr:
-            print(result.stderr.strip())
-        if result.returncode != 0:
-            print(f"WARNING: fits2idia exited with code {result.returncode} for {inputName}")
+    # Convert to HDF5 (gated by [merge] run_fits2idia). merge_image_parts.py is
+    # already invoked via `singularity exec rm-env.sif python3 ./...`, so
+    # fits2idia is on PATH directly — no nested singularity exec needed.
+    if run_fits2idia:
+        for inputName in listing_basenames:
+            command = f"fits2idia -s -p {inputName}"
+            print(f"Command: {command}")
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    universal_newlines=True, shell=True)
+            if result.stdout:
+                print(result.stdout.strip())
+            if result.stderr:
+                print(result.stderr.strip())
+            if result.returncode != 0:
+                print(f"WARNING: fits2idia exited with code {result.returncode} for {inputName}")
+    else:
+        print("[merge] run_fits2idia=False -> skipping HDF5 conversion.")
 
 
-def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa_container='', job_name_suffix=''):
+def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa_container='',
+                      job_name_suffix='', mem='100', time='20:00:00', partition='Main',
+                      nodes='1', ntasks_per_node='1', cpus_per_task='1',
+                      run_fits2idia='True', fix_invalid_stokes='True'):
     def get_part_number(x):
         return int(x.split("part_")[1].split("_")[0])
     listing_all_parts = sorted(glob("processing/*fits"), key = get_part_number)
@@ -319,15 +324,15 @@ def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa
     env_export = f"export PROCESSRM_RM_CONTAINER={rm_container};" if rm_container else ""
     sbatch_content = f'''#!/bin/bash
 #SBATCH --array=1-{length_listing_basenames}
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=100GB
+#SBATCH --nodes={nodes}
+#SBATCH --ntasks-per-node={ntasks_per_node}
+#SBATCH --cpus-per-task={cpus_per_task}
+#SBATCH --mem={mem}GB
 #SBATCH --job-name=merge{job_name_suffix}
 #SBATCH --output=logs/merge{job_name_suffix}-%A-%a.out
 #SBATCH --error=logs/merge{job_name_suffix}-%A-%a.err
-#SBATCH --partition=Main
-#SBATCH --time=20:00:00
+#SBATCH --partition={partition}
+#SBATCH --time={time}
 #SBATCH --account={account}
 
 cat /etc/hostname
@@ -341,7 +346,7 @@ fi
 
 {env_export}
 t0=$SECONDS
-{runner} python3 ./merge_image_parts.py --inputcube {inputcube} --slurmArrayTaskId ${{SLURM_ARRAY_TASK_ID}} --account {account} --rmContainer {rm_container} --casaContainer {casa_container}
+{runner} python3 ./merge_image_parts.py --inputcube {inputcube} --slurmArrayTaskId ${{SLURM_ARRAY_TASK_ID}} --account {account} --rmContainer {rm_container} --casaContainer {casa_container} --runFits2idia {run_fits2idia} --fixInvalidStokes {fix_invalid_stokes}
 rc=$?
 echo "${{SLURM_ARRAY_JOB_ID}},${{SLURM_ARRAY_TASK_ID}},merge,$((SECONDS - t0)),$([ $rc -eq 0 ] && echo OK || echo FAIL),$(date -Iseconds)" >> "$TIMING_LOG"
     '''
@@ -402,8 +407,18 @@ Examples:
     parser.add_argument('--jobNameSuffix', default='',
                         help='Optional suffix appended to the SLURM job name and log filenames '
                              '(used by the per-region orchestrator, e.g. "_r1", "_r2").')
+    parser.add_argument('--runFits2idia', default='True',
+                        help='Convert merged FITS to HDF5 (default True). From [merge] run_fits2idia.')
+    parser.add_argument('--fixInvalidStokes', default='True',
+                        help='Patch CRVAL4=0 on merged FDF/RMSF cubes (default True). '
+                             'From [merge] fix_invalid_stokes.')
 
     args = parser.parse_args()
+
+    def _str_to_bool(s):
+        return str(s).strip().lower() in ('true', '1', 'yes', 'on')
+    run_fits2idia_b = _str_to_bool(args.runFits2idia)
+    fix_invalid_stokes_b = _str_to_bool(args.fixInvalidStokes)
 
     # Export container path for child fits2idia call
     if args.rmContainer:
@@ -414,10 +429,14 @@ Examples:
         write_sbatch_file(args.inputcube, account=args.account,
                           rm_container=args.rmContainer,
                           casa_container=args.casaContainer,
-                          job_name_suffix=args.jobNameSuffix)
+                          job_name_suffix=args.jobNameSuffix,
+                          run_fits2idia=args.runFits2idia,
+                          fix_invalid_stokes=args.fixInvalidStokes)
         submit_slurm_job()
     if args.slurmArrayTaskId:
-        create_all_cubes(args.inputcube, slurmArrayTaskId=args.slurmArrayTaskId)
+        create_all_cubes(args.inputcube, slurmArrayTaskId=args.slurmArrayTaskId,
+                         run_fits2idia=run_fits2idia_b,
+                         fix_invalid_stokes=fix_invalid_stokes_b)
 
 
 if __name__ == "__main__":

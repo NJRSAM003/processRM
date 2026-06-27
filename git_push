@@ -1,0 +1,38 @@
+#!/bin/bash
+# Stage every tracked + new file, commit, and push to the current branch's remote.
+# Usage:
+#   ./git_push                     -> prompts for a commit message
+#   ./git_push "commit message"    -> uses the given message
+set -e
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+git add -A
+
+if git diff --cached --quiet; then
+    echo "No changes to commit. Nothing to push."
+    exit 0
+fi
+
+echo ""
+echo "===== Staged changes ====="
+git status --short
+echo "=========================="
+echo ""
+
+if [ -n "$1" ]; then
+    MSG="$*"
+else
+    read -r -p "Commit message: " MSG
+    if [ -z "$MSG" ]; then
+        echo "Aborted: empty commit message."
+        git reset HEAD >/dev/null
+        exit 1
+    fi
+fi
+
+git commit -m "$MSG"
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+git push -u origin "$BRANCH"

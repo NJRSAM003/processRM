@@ -944,42 +944,55 @@ def _preview_chunk_geometry(args, fits_full, workdir, taskvals):
 _SINGLE_CUBE_BODY = r"""
 # ---- SINGLE-CUBE FLOW (no region file in config) ----
 
-# Stage 1: Extract Stokes I, Q, and U from the full IQUV input cube
-echo "[Stage 1] Extracting Stokes I/Q/U from full IQUV cube..."
-singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
 BASENAME=$(basename "$FITS_FULL" .fits)
 FITS_Q="${BASENAME}.stokesQ.fits"
 FITS_U="${BASENAME}.stokesU.fits"
 FITS_I="${BASENAME}.stokesI.fits"
-echo "  -> Created: $FITS_Q"
-echo "  -> Created: $FITS_U"
-echo "  -> Created: $FITS_I"
+
+# Stage 1: Extract Stokes I, Q, U from the full IQUV cube (gated by [run] stages='extract')
+if has_stage extract; then
+    if [ "$RESUME" = "True" ] && [ -f "$FITS_Q" ] && [ -f "$FITS_U" ] && [ -f "$FITS_I" ]; then
+        echo "[Stage 1] SKIP — Stokes Q/U/I already extracted."
+    else
+        echo "[Stage 1] Extracting Stokes I/Q/U from full IQUV cube..."
+        singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
+        echo "  -> Created: $FITS_Q"
+        echo "  -> Created: $FITS_U"
+        echo "  -> Created: $FITS_I"
+    fi
+else
+    echo "[Stage 1] Skipping extract ([run] stages=$STAGES)"
+fi
 
 # Stage 1.5: Per-pixel noise map (PyBDSF on Stokes I).
 # Skip when [rmclean] threshold is positive (absolute mode) or when the user
 # supplied a pre-computed noise map in [noise] noise_map.
+# Also gated by 'extract' stage membership (the noise map is part of the
+# input-preparation stage from the pipeline's perspective).
 NOISE_MAP="noise_map.fits"
 SLURMID_NOISE=""
-if [ -n "$NOISE_MAP_CFG" ]; then
+if ! has_stage extract; then
+    echo "[Stage 1.5] Skipping noise map ([run] stages=$STAGES)"
+elif [ -n "$NOISE_MAP_CFG" ]; then
     echo "[Stage 1.5] Using pre-supplied noise map from config: $NOISE_MAP_CFG"
     NOISE_MAP="$NOISE_MAP_CFG"
 elif awk "BEGIN{exit !($THRESHOLD < 0)}"; then
-    if [ -f "$NOISE_MAP" ]; then
+    if [ "$RESUME" = "True" ] && [ -f "$NOISE_MAP" ]; then
         # Re-run: noise map from a previous submission is still on disk.
         echo "[Stage 1.5] $NOISE_MAP already exists -- skipping noise generation."
     else
         echo "[Stage 1.5] Submitting make_noise.sbatch (sigma mode, threshold=$THRESHOLD)..."
         cat > make_noise.sbatch <<NOISEEOF
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=${MEM_NOISE}GB
 #SBATCH --job-name=noise
 #SBATCH --output=logs/noise-%j.out
 #SBATCH --error=logs/noise-%j.err
-#SBATCH --partition=Main
-#SBATCH --time=10:00:00
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
 #SBATCH --account=$ACCOUNT
 
 set -e
@@ -1021,6 +1034,13 @@ singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parall
     --mem "$MEM" \
     --ncores "$NCORES" \
     --internalChunk "$INTERNAL_CHUNK" \
+    --partition "$PARTITION" \
+    --time "$TIME" \
+    --nodes "$NODES" \
+    --ntasksPerNode "$NTASKS_PER_NODE" \
+    --cpusPerTask "$CPUS_PER_TASK" \
+    --stages "$STAGES" \
+    --resume "$RESUME" \
     --createSbatch
 
 # Stage 3: Submit the RM synthesis array job (depends on noise stage if any).
@@ -1029,26 +1049,33 @@ singularity --quiet exec "$RM_CONTAINER" python3 ./run_parallel_rmsy.py --parall
 # `sbatch --array=<missing>`. That way a re-run with one OOMed chunk only
 # asks SLURM for one mem_chunk allocation instead of all CHUNKS.
 echo ""
-echo "[Stage 3] Pre-scanning processing/ for already-complete chunks..."
-MISSING=""
-for i in $(seq 1 $CHUNKS); do
-    [ -f "processing/part_${i}_FDF_clean_tot.fits" ] || MISSING="${MISSING}${i},"
-done
-MISSING="${MISSING%,}"
-NUM_MISSING=$([ -z "$MISSING" ] && echo 0 || echo "$MISSING" | tr ',' '\n' | wc -l)
+SLURMID_RMSY=""
 DEP_RMSY=""
 # --kill-on-invalid-dep=yes so SLURM auto-cancels rmsy if the noise job
 # fails, instead of leaving it pending with DependencyNeverSatisfied.
 [ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE --kill-on-invalid-dep=yes"
-if [ "$NUM_MISSING" = "0" ]; then
-    echo "[Stage 3] All $CHUNKS chunks already complete -- skipping rmsy submission."
-    SLURMID_RMSY=""
-elif [ "$NUM_MISSING" = "$CHUNKS" ]; then
-    echo "[Stage 3] All $CHUNKS chunks need processing; submitting full array..."
-    SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+if ! has_stage rmsynth && ! has_stage rmclean; then
+    echo "[Stage 3] Skipping RM synthesis array ([run] stages=$STAGES)"
+elif [ "$RESUME" = "True" ]; then
+    echo "[Stage 3] Pre-scanning processing/ for already-complete chunks..."
+    MISSING=""
+    for i in $(seq 1 $CHUNKS); do
+        [ -f "processing/part_${i}_FDF_clean_tot.fits" ] || MISSING="${MISSING}${i},"
+    done
+    MISSING="${MISSING%,}"
+    NUM_MISSING=$([ -z "$MISSING" ] && echo 0 || echo "$MISSING" | tr ',' '\n' | wc -l)
+    if [ "$NUM_MISSING" = "0" ]; then
+        echo "[Stage 3] All $CHUNKS chunks already complete -- skipping rmsy submission."
+    elif [ "$NUM_MISSING" = "$CHUNKS" ]; then
+        echo "[Stage 3] All $CHUNKS chunks need processing; submitting full array..."
+        SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+    else
+        echo "[Stage 3] $NUM_MISSING of $CHUNKS chunks missing; submitting trimmed array..."
+        SLURMID_RMSY=$(sbatch $DEP_RMSY --array="$MISSING" run_parallel_rmsy.sbatch | awk '{print $4}')
+    fi
 else
-    echo "[Stage 3] $NUM_MISSING of $CHUNKS chunks missing; submitting trimmed array..."
-    SLURMID_RMSY=$(sbatch $DEP_RMSY --array="$MISSING" run_parallel_rmsy.sbatch | awk '{print $4}')
+    echo "[Stage 3] RESUME=False -> submitting full array (no pre-scan)..."
+    SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
 fi
 echo "  -> RM synthesis array: SLURM job ${SLURMID_RMSY:-(none submitted)} ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
 
@@ -1058,14 +1085,14 @@ echo "[Stage 4] Writing merge-prep sbatch (will run after $SLURMID_RMSY)..."
 INPUT_CUBE="$FITS_FULL"
 cat > merge_prep.sbatch <<MPEOF
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=4GB
 #SBATCH --job-name=merge_prep
 #SBATCH --output=logs/merge_prep-%j.out
 #SBATCH --error=logs/merge_prep-%j.err
-#SBATCH --partition=Main
+#SBATCH --partition=${PARTITION}
 #SBATCH --time=00:30:00
 #SBATCH --account=$ACCOUNT
 
@@ -1081,7 +1108,15 @@ import merge_image_parts as m
 m.write_sbatch_file('$INPUT_CUBE',
                     account='$ACCOUNT',
                     rm_container='$RM_CONTAINER',
-                    casa_container='$CASA_CONTAINER')
+                    casa_container='$CASA_CONTAINER',
+                    mem='$MEM_MERGE',
+                    time='$TIME_MERGE',
+                    partition='$PARTITION',
+                    nodes='$NODES',
+                    ntasks_per_node='$NTASKS_PER_NODE',
+                    cpus_per_task='$CPUS_PER_TASK',
+                    run_fits2idia='$RUN_FITS2IDIA',
+                    fix_invalid_stokes='$FIX_INVALID_STOKES')
 "
 
 if [ -f merge_image_parts.sbatch ]; then
@@ -1099,14 +1134,14 @@ EOF2
     # afterany so it still cleans up even if some merges failed.
     cat > finalize.sbatch <<FINEOF
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=1GB
 #SBATCH --job-name=finalize
 #SBATCH --output=logs/finalize-%j.out
 #SBATCH --error=logs/finalize-%j.err
-#SBATCH --partition=Main
+#SBATCH --partition=${PARTITION}
 #SBATCH --time=00:05:00
 #SBATCH --account=$ACCOUNT
 
@@ -1122,13 +1157,20 @@ else
     echo "[merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
 MPEOF
-# Only condition merge_prep on rmsy if rmsy was actually submitted; if every
-# chunk was already complete (SLURMID_RMSY empty), run merge_prep immediately.
-DEP_MERGE=""
-[ -n "$SLURMID_RMSY" ] && DEP_MERGE="--dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes"
-SLURMID_MERGEPREP=$(sbatch $DEP_MERGE merge_prep.sbatch | awk '{print $4}')
-echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP ${DEP_MERGE:+(depends on $SLURMID_RMSY)}"
-SLURMID_MERGE="$SLURMID_MERGEPREP"
+# Gate merge submission on [merge] run_merge AND [run] stages containing 'merge'.
+SLURMID_MERGEPREP=""
+SLURMID_MERGE=""
+if [ "$RUN_MERGE" = "True" ] && has_stage merge; then
+    # Only condition merge_prep on rmsy if rmsy was actually submitted; if every
+    # chunk was already complete (SLURMID_RMSY empty), run merge_prep immediately.
+    DEP_MERGE=""
+    [ -n "$SLURMID_RMSY" ] && DEP_MERGE="--dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes"
+    SLURMID_MERGEPREP=$(sbatch $DEP_MERGE merge_prep.sbatch | awk '{print $4}')
+    echo "  -> Merge prep: SLURM job $SLURMID_MERGEPREP ${DEP_MERGE:+(depends on $SLURMID_RMSY)}"
+    SLURMID_MERGE="$SLURMID_MERGEPREP"
+else
+    echo "  -> Skipping merge stage ([merge] run_merge=$RUN_MERGE, [run] stages=$STAGES)"
+fi
 
 write_kill () {
     local script="$1"; local ids="$2"; local label="$3"
@@ -1217,36 +1259,46 @@ for i in "${!REGION_IDS[@]}"; do
     done
 
     # Stage 1 (per region): extract cropped Stokes I/Q/U from the full IQUV cube
-    echo "[r${RID} Stage 1] Extracting Stokes I/Q/U with crop=${CROP} pointing=${POINT}"
-    singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py \
-        --inputcube "$FITS_FULL" --crop "${CROP}" --pointing "${POINT}"
     R_BASE=$(basename "$FITS_FULL" .fits)
     R_FITS_Q="${R_BASE}.stokesQ.fits"
     R_FITS_U="${R_BASE}.stokesU.fits"
     R_FITS_I="${R_BASE}.stokesI.fits"
+    if has_stage extract; then
+        if [ "$RESUME" = "True" ] && [ -f "$R_FITS_Q" ] && [ -f "$R_FITS_U" ] && [ -f "$R_FITS_I" ]; then
+            echo "[r${RID} Stage 1] SKIP — Stokes Q/U/I already extracted."
+        else
+            echo "[r${RID} Stage 1] Extracting Stokes I/Q/U with crop=${CROP} pointing=${POINT}"
+            singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py \
+                --inputcube "$FITS_FULL" --crop "${CROP}" --pointing "${POINT}"
+        fi
+    else
+        echo "[r${RID} Stage 1] Skipping extract ([run] stages=$STAGES)"
+    fi
 
-    # Stage 1.5 (per region): noise map
+    # Stage 1.5 (per region): noise map (gated by 'extract' stage membership)
     R_NOISE_MAP="noise_map.fits"
     SLURMID_NOISE=""
-    if [ -n "$NOISE_MAP_CFG" ]; then
+    if ! has_stage extract; then
+        echo "[r${RID} Stage 1.5] Skipping noise map ([run] stages=$STAGES)"
+    elif [ -n "$NOISE_MAP_CFG" ]; then
         echo "[r${RID} Stage 1.5] Using pre-supplied noise map: $NOISE_MAP_CFG"
         R_NOISE_MAP="$NOISE_MAP_CFG"
     elif awk "BEGIN{exit !($THRESHOLD < 0)}"; then
-        if [ -f "$R_NOISE_MAP" ]; then
+        if [ "$RESUME" = "True" ] && [ -f "$R_NOISE_MAP" ]; then
             echo "[r${RID} Stage 1.5] $R_NOISE_MAP already exists -- skipping noise generation."
         else
             echo "[r${RID} Stage 1.5] Submitting make_noise.sbatch (sigma mode)"
             cat > make_noise.sbatch <<NOISEEOF
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=${MEM_NOISE}GB
 #SBATCH --job-name=noise${SUFFIX}
 #SBATCH --output=logs/noise-%j.out
 #SBATCH --error=logs/noise-%j.err
-#SBATCH --partition=Main
-#SBATCH --time=10:00:00
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
 #SBATCH --account=$ACCOUNT
 
 set -e
@@ -1286,31 +1338,45 @@ NOISEEOF
         --rmContainer "$RM_CONTAINER" \
         --noiseMap "$R_NOISE_MAP" \
         --jobNameSuffix "$SUFFIX" \
+        --mem "$MEM" \
+        --ncores "$NCORES" \
+        --internalChunk "$INTERNAL_CHUNK" \
+        --partition "$PARTITION" \
+        --time "$TIME" \
+        --nodes "$NODES" \
+        --ntasksPerNode "$NTASKS_PER_NODE" \
+        --cpusPerTask "$CPUS_PER_TASK" \
+        --stages "$STAGES" \
+        --resume "$RESUME" \
         --createSbatch
 
     # Stage 3 (per region): submit rmsy array (depends on noise stage if any).
-    # Resume-aware: pre-scan processing/ for already-complete chunks and submit
-    # only the MISSING task IDs so a re-run with one OOMed chunk doesn't ask
-    # SLURM to allocate mem_chunk for the whole region's array.
-    MISSING=""
-    for i in $(seq 1 $CHUNKS); do
-        [ -f "processing/part_${i}_FDF_clean_tot.fits" ] || MISSING="${MISSING}${i},"
-    done
-    MISSING="${MISSING%,}"
-    NUM_MISSING=$([ -z "$MISSING" ] && echo 0 || echo "$MISSING" | tr ',' '\n' | wc -l)
+    SLURMID_RMSY=""
     DEP_RMSY=""
     # --kill-on-invalid-dep=yes so rmsy self-cancels if the per-region noise
     # job fails, instead of squatting in the queue forever.
     [ -n "$SLURMID_NOISE" ] && DEP_RMSY="--dependency=afterok:$SLURMID_NOISE --kill-on-invalid-dep=yes"
-    if [ "$NUM_MISSING" = "0" ]; then
-        echo "[r${RID} Stage 3] All $CHUNKS chunks already complete -- skipping rmsy submission."
-        SLURMID_RMSY=""
-    elif [ "$NUM_MISSING" = "$CHUNKS" ]; then
-        echo "[r${RID} Stage 3] All $CHUNKS chunks need processing; submitting full array..."
-        SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+    if ! has_stage rmsynth && ! has_stage rmclean; then
+        echo "[r${RID} Stage 3] Skipping RM synthesis array ([run] stages=$STAGES)"
+    elif [ "$RESUME" = "True" ]; then
+        MISSING=""
+        for i in $(seq 1 $CHUNKS); do
+            [ -f "processing/part_${i}_FDF_clean_tot.fits" ] || MISSING="${MISSING}${i},"
+        done
+        MISSING="${MISSING%,}"
+        NUM_MISSING=$([ -z "$MISSING" ] && echo 0 || echo "$MISSING" | tr ',' '\n' | wc -l)
+        if [ "$NUM_MISSING" = "0" ]; then
+            echo "[r${RID} Stage 3] All $CHUNKS chunks already complete -- skipping rmsy submission."
+        elif [ "$NUM_MISSING" = "$CHUNKS" ]; then
+            echo "[r${RID} Stage 3] All $CHUNKS chunks need processing; submitting full array..."
+            SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
+        else
+            echo "[r${RID} Stage 3] $NUM_MISSING of $CHUNKS chunks missing; submitting trimmed array..."
+            SLURMID_RMSY=$(sbatch $DEP_RMSY --array="$MISSING" run_parallel_rmsy.sbatch | awk '{print $4}')
+        fi
     else
-        echo "[r${RID} Stage 3] $NUM_MISSING of $CHUNKS chunks missing; submitting trimmed array..."
-        SLURMID_RMSY=$(sbatch $DEP_RMSY --array="$MISSING" run_parallel_rmsy.sbatch | awk '{print $4}')
+        echo "[r${RID} Stage 3] RESUME=False -> submitting full array (no pre-scan)..."
+        SLURMID_RMSY=$(sbatch $DEP_RMSY run_parallel_rmsy.sbatch | awk '{print $4}')
     fi
     [ -n "$SLURMID_RMSY" ] && ALL_RMSY_IDS="$ALL_RMSY_IDS $SLURMID_RMSY"
     echo "[r${RID} Stage 3] RM synthesis array: SLURM job ${SLURMID_RMSY:-(none submitted)} ${DEP_RMSY:+(waits on $SLURMID_NOISE)}"
@@ -1323,14 +1389,14 @@ NOISEEOF
     INPUT_CUBE="$R_FITS_Q"
     cat > merge_prep.sbatch <<MPEOF
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=4GB
 #SBATCH --job-name=merge_prep${SUFFIX}
 #SBATCH --output=logs/merge_prep-%j.out
 #SBATCH --error=logs/merge_prep-%j.err
-#SBATCH --partition=Main
+#SBATCH --partition=${PARTITION}
 #SBATCH --time=00:30:00
 #SBATCH --account=$ACCOUNT
 
@@ -1347,7 +1413,15 @@ m.write_sbatch_file('$INPUT_CUBE',
                     account='$ACCOUNT',
                     rm_container='$RM_CONTAINER',
                     casa_container='$CASA_CONTAINER',
-                    job_name_suffix='${SUFFIX}')
+                    job_name_suffix='${SUFFIX}',
+                    mem='$MEM_MERGE',
+                    time='$TIME_MERGE',
+                    partition='$PARTITION',
+                    nodes='$NODES',
+                    ntasks_per_node='$NTASKS_PER_NODE',
+                    cpus_per_task='$CPUS_PER_TASK',
+                    run_fits2idia='$RUN_FITS2IDIA',
+                    fix_invalid_stokes='$FIX_INVALID_STOKES')
 "
 
 if [ -f merge_image_parts.sbatch ]; then
@@ -1358,14 +1432,14 @@ if [ -f merge_image_parts.sbatch ]; then
     # all of its merges have run (afterany so it cleans even on partial fail).
     cat > finalize.sbatch <<FINEOF
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=1GB
 #SBATCH --job-name=finalize${SUFFIX}
 #SBATCH --output=logs/finalize-%j.out
 #SBATCH --error=logs/finalize-%j.err
-#SBATCH --partition=Main
+#SBATCH --partition=${PARTITION}
 #SBATCH --time=00:05:00
 #SBATCH --account=$ACCOUNT
 
@@ -1381,11 +1455,16 @@ else
     echo "[r${RID} merge_prep] WARNING: merge_image_parts.sbatch was not written."
 fi
 MPEOF
-    DEP_MERGE=""
-    [ -n "$SLURMID_RMSY" ] && DEP_MERGE="--dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes"
-    SLURMID_MERGEPREP=$(sbatch $DEP_MERGE merge_prep.sbatch | awk '{print $4}')
-    echo "[r${RID} Stage 4] Merge prep: SLURM job $SLURMID_MERGEPREP ${DEP_MERGE:+(depends on $SLURMID_RMSY)}"
-    ALL_MERGEPREP_IDS="$ALL_MERGEPREP_IDS $SLURMID_MERGEPREP"
+    # Gate merge submission on [merge] run_merge AND [run] stages containing 'merge'.
+    if [ "$RUN_MERGE" = "True" ] && has_stage merge; then
+        DEP_MERGE=""
+        [ -n "$SLURMID_RMSY" ] && DEP_MERGE="--dependency=afterok:$SLURMID_RMSY --kill-on-invalid-dep=yes"
+        SLURMID_MERGEPREP=$(sbatch $DEP_MERGE merge_prep.sbatch | awk '{print $4}')
+        echo "[r${RID} Stage 4] Merge prep: SLURM job $SLURMID_MERGEPREP ${DEP_MERGE:+(depends on $SLURMID_RMSY)}"
+        ALL_MERGEPREP_IDS="$ALL_MERGEPREP_IDS $SLURMID_MERGEPREP"
+    else
+        echo "[r${RID} Stage 4] Skipping merge ([merge] run_merge=$RUN_MERGE, [run] stages=$STAGES)"
+    fi
 
     cd "$WORKDIR"
 done
@@ -1440,17 +1519,18 @@ def generate_submit_script(workdir, config_path, regions=None):
     submit_path = os.path.join(workdir, MASTER_SCRIPT)
 
     # ----- orchestrator sbatch (runs on a compute node) -----
+    # SLURM resource directives are templated from the config at generation time
+    # (the orchestrator can't call read_cfg before it starts).
     orchestrator = rf"""#!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
+#SBATCH --nodes=__NODES__
+#SBATCH --ntasks-per-node=__NTASKS_PER_NODE__
+#SBATCH --cpus-per-task=__CPUS_PER_TASK__
 #SBATCH --mem=10GB
 #SBATCH --job-name=processRM_orchestrate
 #SBATCH --output=logs/orchestrate-%j.out
 #SBATCH --error=logs/orchestrate-%j.err
-#SBATCH --partition=Main
+#SBATCH --partition=__PARTITION__
 #SBATCH --time=02:00:00
-# Account, container & config values are templated in below at generation time:
 #SBATCH --account=__ACCOUNT__
 
 set -e
@@ -1498,8 +1578,38 @@ SKIP_RMSF=$(read_cfg rmsynth skip_rmsf False)
 SUPER_RESOLUTION=$(read_cfg rmsynth super_resolution False)
 MEM=$(read_cfg slurm mem 10)
 MEM_NOISE=$(read_cfg slurm mem_noise 100)
+MEM_MERGE=$(read_cfg slurm mem_merge 100)
+TIME=$(read_cfg slurm time 10:00:00)
+TIME_MERGE=$(read_cfg slurm time_merge 20:00:00)
+PARTITION=$(read_cfg slurm partition Main)
+NODES=$(read_cfg slurm nodes 1)
+NTASKS_PER_NODE=$(read_cfg slurm ntasks_per_node 1)
+CPUS_PER_TASK=$(read_cfg slurm cpus_per_task 1)
 NCORES=$(read_cfg rmclean ncores 1)
 INTERNAL_CHUNK=$(read_cfg rmclean internal_chunk '')
+
+# Merge stage flags
+RUN_MERGE=$(read_cfg merge run_merge True)
+RUN_FITS2IDIA=$(read_cfg merge run_fits2idia True)
+FIX_INVALID_STOKES=$(read_cfg merge fix_invalid_stokes True)
+
+# Run-control flags
+STAGES=$(read_cfg run stages "['extract', 'rmsynth', 'rmclean', 'merge']")
+CONTINUE=$(read_cfg run continue True)
+RESUME_SAFE=$(read_cfg run resume_safe True)
+# A stage's outputs are reused only when BOTH 'continue' and 'resume_safe' are True.
+if [ "$CONTINUE" = "True" ] && [ "$RESUME_SAFE" = "True" ]; then
+    RESUME="True"
+else
+    RESUME="False"
+fi
+has_stage () {{
+    # Returns 0 if $1 appears in $STAGES (which is the literal Python list repr).
+    case "$STAGES" in
+        *\'$1\'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}}
 
 echo "RM container:   $RM_CONTAINER"
 echo "CASA container: $CASA_CONTAINER"
@@ -1514,10 +1624,18 @@ __REGION_BLOCK__
     taskvals, _ = config_parser.parse_config(config_path)
     account_val = (taskvals.get('slurm', {}).get('account') or 'b03-idia-ag').strip("'\"")
     rm_container_val = (taskvals.get('slurm', {}).get('rm_container') or '').strip("'\"")
+    partition_val = str(taskvals.get('slurm', {}).get('partition') or 'Main').strip("'\"") or 'Main'
+    nodes_val = str(taskvals.get('slurm', {}).get('nodes') or '1').strip("'\"") or '1'
+    ntasks_val = str(taskvals.get('slurm', {}).get('ntasks_per_node') or '1').strip("'\"") or '1'
+    cpus_val = str(taskvals.get('slurm', {}).get('cpus_per_task') or '1').strip("'\"") or '1'
     region_block = _multi_region_body(regions) if regions else _SINGLE_CUBE_BODY
     orchestrator = (orchestrator
                     .replace('__ACCOUNT__', account_val)
                     .replace('__RM_CONTAINER__', rm_container_val)
+                    .replace('__PARTITION__', partition_val)
+                    .replace('__NODES__', nodes_val)
+                    .replace('__NTASKS_PER_NODE__', ntasks_val)
+                    .replace('__CPUS_PER_TASK__', cpus_val)
                     .replace('__REGION_BLOCK__', region_block))
 
     with open(orch_path, 'w') as f:
