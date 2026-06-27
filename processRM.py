@@ -1548,13 +1548,16 @@ echo "Config:  $CONFIG"
 echo ""
 
 read_cfg () {{
+    # Pass the default via sys.argv (not inline interpolation) so defaults
+    # containing single quotes -- e.g. "['extract', 'rmsynth', ...]" -- don't
+    # collide with the surrounding 'quoted' Python literal.
     singularity --quiet exec __RM_CONTAINER__ python3 -c "
-import config_parser
+import sys, config_parser
 t,_ = config_parser.parse_config('$CONFIG')
 v = t.get('$1', {{}}).get('$2', '')
 s = '' if v is None else str(v).strip().strip(\"'\\\"\")
-print(s or '$3')
-"
+print(s or sys.argv[1])
+" "$3"
 }}
 
 FITS_FULL=$(read_cfg data fits_full '')
