@@ -292,7 +292,7 @@ def _parse_ds9(text, wcs_header, world):
                 rot = 0.0
             if abs(rot) > 1e-6:
                 raise RegionParseError(
-                    f"Rotated boxes (rotation={rot}°) are not supported. "
+                    f"Rotated boxes (rotation={rot} deg) are not supported. "
                     "Set rotation to 0 in CARTA and re-export."
                 )
         if world:

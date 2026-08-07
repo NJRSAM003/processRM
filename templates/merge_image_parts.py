@@ -279,7 +279,7 @@ def create_all_cubes(inputcube, slurmArrayTaskId, run_fits2idia=True, fix_invali
 
     # Convert to HDF5 (gated by [merge] run_fits2idia). merge_image_parts.py is
     # already invoked via `singularity exec rm-env.sif python3 ./...`, so
-    # fits2idia is on PATH directly — no nested singularity exec needed.
+    # fits2idia is on PATH directly - no nested singularity exec needed.
     if run_fits2idia:
         for inputName in listing_basenames:
             command = f"fits2idia -s -p {inputName}"
@@ -317,7 +317,7 @@ def write_sbatch_file(inputcube, account='b09-mightee-ag', rm_container='', casa
     filename_sbatch = __file__.replace(".py", ".sbatch")
     print(f"Writing sbatch file: {filename_sbatch}")
     # [CHANGE 2026-06-11]: Containerised merge step
-    # Reason: Match processMeerKAT design — script runs inside rm-env container
+    # Reason: Match processMeerKAT design - script runs inside rm-env container
     # via 'singularity exec'. Environment variable PROCESSRM_RM_CONTAINER is passed
     # so fits2idia call inside the script also uses the container.
     runner = f"singularity --quiet exec {rm_container}" if rm_container else ""
@@ -398,7 +398,7 @@ Examples:
     # Allows users to specify different project accounts without editing code.
     parser.add_argument('--account', default='b09-mightee-ag',
                         help='SLURM account for job submission (default: b09-mightee-ag)')
-    # [CHANGE 2026-06-11]: Containerised — accept container paths
+    # [CHANGE 2026-06-11]: Containerised - accept container paths
     parser.add_argument('--rmContainer', default='',
                         help='Path to rm-env Singularity container (for fits2idia)')
     parser.add_argument('--casaContainer',

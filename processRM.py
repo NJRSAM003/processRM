@@ -513,7 +513,7 @@ Examples:
                         help='BUILD mode: path to the full-Stokes IQUV radio-continuum cube '
                              '(e.g. mycube_IQUV.fits). processRM extracts Stokes I, Q, and U '
                              'internally; standalone Q/U cubes are not accepted. Relative or '
-                             'absolute paths are fine — processRM will symlink the file into '
+                             'absolute paths are fine - processRM will symlink the file into '
                              'the current directory so all outputs land here.')
     parser.add_argument('-f', '--freqlist',
                         help='Path to frequency list (.txt). Required when -B is used.')
@@ -622,7 +622,7 @@ def link_into_workdir(src_path, workdir, label="file"):
     dst = os.path.join(workdir, basename)
 
     if os.path.abspath(dst) == src_abs:
-        # Already in workdir — nothing to do
+        # Already in workdir - nothing to do
         return basename
 
     if os.path.lexists(dst):
@@ -952,7 +952,7 @@ FITS_I="${BASENAME}.stokesI.fits"
 # Stage 1: Extract Stokes I, Q, U from the full IQUV cube (gated by [run] stages='extract')
 if has_stage extract; then
     if [ "$RESUME" = "True" ] && [ -f "$FITS_Q" ] && [ -f "$FITS_U" ] && [ -f "$FITS_I" ]; then
-        echo "[Stage 1] SKIP — Stokes Q/U/I already extracted."
+        echo "[Stage 1] SKIP - Stokes Q/U/I already extracted."
     else
         echo "[Stage 1] Extracting Stokes I/Q/U from full IQUV cube..."
         singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py --inputcube "$FITS_FULL"
@@ -1265,7 +1265,7 @@ for i in "${!REGION_IDS[@]}"; do
     R_FITS_I="${R_BASE}.stokesI.fits"
     if has_stage extract; then
         if [ "$RESUME" = "True" ] && [ -f "$R_FITS_Q" ] && [ -f "$R_FITS_U" ] && [ -f "$R_FITS_I" ]; then
-            echo "[r${RID} Stage 1] SKIP — Stokes Q/U/I already extracted."
+            echo "[r${RID} Stage 1] SKIP - Stokes Q/U/I already extracted."
         else
             echo "[r${RID} Stage 1] Extracting Stokes I/Q/U with crop=${CROP} pointing=${POINT}"
             singularity --quiet exec "$RM_CONTAINER" python3 ./create_subimage.py \
@@ -1883,18 +1883,18 @@ def materialize_workdir_from_config(config_path, workdir):
         if not path:
             continue
         if path == os.path.basename(path):
-            # Config already has a basename — file must already exist in workdir
+            # Config already has a basename - file must already exist in workdir
             dst = os.path.join(workdir, path)
             if not os.path.exists(dst):
                 missing.append((key, path, dst))
         else:
-            # Config has a directory part — verify the absolute source exists
+            # Config has a directory part - verify the absolute source exists
             if not os.path.exists(path):
                 missing.append((key, path, path))
 
     if missing:
         logger.error("=" * 60)
-        logger.error("CANNOT MATERIALISE WORKDIR — input file(s) missing!")
+        logger.error("CANNOT MATERIALISE WORKDIR - input file(s) missing!")
         logger.error("=" * 60)
         for key, config_val, looked_for in missing:
             logger.error(f"  [data] {key} = '{config_val}'")
@@ -1909,14 +1909,14 @@ def materialize_workdir_from_config(config_path, workdir):
         logger.error("Run aborted. No SLURM jobs were submitted.")
         sys.exit(1)
 
-    # ---- All paths good — materialise the workdir ----
+    # ---- All paths good - materialise the workdir ----
     updates = {}
     for key in data_keys:
         path = (data.get(key) or '').strip()
         if not path:
             continue
         if path == os.path.basename(path):
-            # Already a local basename and file exists (verified above) — nothing to do
+            # Already a local basename and file exists (verified above) - nothing to do
             continue
         basename = link_into_workdir(path, workdir, label=key)
         updates[('data', key)] = f"'{basename}'"
@@ -1999,7 +1999,7 @@ def materialize_workdir_from_config(config_path, workdir):
                               rm_container_path=rm_container_now,
                               account=account_now)
 
-    # Subdirectories — only now that we know we will actually run
+    # Subdirectories - only now that we know we will actually run
     for sub in ['logs', 'processing', 'errors']:
         os.makedirs(os.path.join(workdir, sub), exist_ok=True)
     for sub in ['extract', 'rmsynth', 'rmclean', 'merge']:

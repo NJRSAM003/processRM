@@ -107,9 +107,9 @@ def write_sbatch_file(args):
     # Reason: Account was hardcoded, requiring code edits for different projects.
     # Now accepts --account parameter, defaults to b09-mightee-ag if not provided.
     # [CHANGE 2026-06-11]: Containerised all binaries (no venv calls)
-    # Reason: Match processMeerKAT design — every binary is invoked via
+    # Reason: Match processMeerKAT design - every binary is invoked via
     # 'singularity --quiet exec <container>'. No reliance on host filesystem venvs.
-    # [CHANGE 2026-06-11]: Resume safety — skip stages whose output already exists
+    # [CHANGE 2026-06-11]: Resume safety - skip stages whose output already exists
     # Reason: Long-running jobs sometimes fail or hit SLURM time limits. Re-submitting
     # the same array job now picks up where it left off instead of redoing everything.
     # Borrowed from the user's own rmtools_pipeline bash script (resume-safe design).
@@ -224,7 +224,7 @@ log_stage() {{
 {'' if run_extract else '# SKIPPED by [run] stages: extract not requested.'}
 {'if true; then' if run_extract else 'if false; then'}
     if {'true' if resume_on else 'false'} && [ -f "$Q_CHUNK" ] && [ -f "$U_CHUNK" ]; then
-        echo "[Stage 1] SKIP — chunks already exist for task $TASKID"
+        echo "[Stage 1] SKIP - chunks already exist for task $TASKID"
         log_stage "chunking" "0" "skipped"
     else
         echo "[Stage 1] Chunking inputs for task $TASKID"
@@ -238,7 +238,7 @@ fi
 # Stage 2: RM synthesis (gated by [run] stages='rmsynth')
 {'if true; then' if run_rmsynth else 'if false; then'}
     if {'true' if resume_on else 'false'} && [ -f "$FDF_DIRTY" ]; then
-        echo "[Stage 2] SKIP — RM synthesis already done for task $TASKID"
+        echo "[Stage 2] SKIP - RM synthesis already done for task $TASKID"
         log_stage "rmsynth" "0" "skipped"
     else
         echo "[Stage 2] Running rmsynth3d for task $TASKID"
@@ -252,7 +252,7 @@ fi
 # Stage 3: RM clean (gated by [run] stages='rmclean')
 {'if true; then' if run_rmclean else 'if false; then'}
     if {'true' if resume_on else 'false'} && [ -f "$FDF_CLEAN" ]; then
-        echo "[Stage 3] SKIP — RM clean already done for task $TASKID"
+        echo "[Stage 3] SKIP - RM clean already done for task $TASKID"
         log_stage "rmclean" "0" "skipped"
     else
         echo "[Stage 3] Running rmclean3d for task $TASKID"

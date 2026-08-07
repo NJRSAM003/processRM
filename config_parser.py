@@ -149,7 +149,7 @@ def validate_config(filename):
     if chunks < 1 or parallel < 1:
         raise ValueError("Config error: parallel and chunks must be >= 1")
 
-    # Validate [rmclean] section — sanity check threshold/iterations
+    # Validate [rmclean] section - sanity check threshold/iterations
     # rmclean3d -c convention: positive = Jy/beam/RMSF, negative = N-sigma
     # (e.g. -c -5 means 5-sigma threshold). Both are valid; reject only 0.
     threshold = validate_args(taskvals, 'rmclean', 'threshold', float, default=1e-6)
@@ -164,7 +164,7 @@ def validate_config(filename):
     if ncores < 1:
         raise ValueError(f"Config error: [rmclean] ncores must be >= 1 (got {ncores})")
 
-    # Validate [slurm] section — memory parameters
+    # Validate [slurm] section - memory parameters
     mem = validate_args(taskvals, 'slurm', 'mem', int, default=10)
     if mem < 1:
         raise ValueError(f"Config error: [slurm] mem must be >= 1 (got {mem})")
