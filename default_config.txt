@@ -30,7 +30,7 @@ chunks = 100                      # Number of chunks to process (<= parallel)
 [rmsynth]
 phimax = 1000                     # -l PHIMAX_RADM2 (float, rad/m^2): max Faraday depth.
 dphi = ''                         # -d DPHI_RADM2 (float, rad/m^2): Faraday channel width. Leave EMPTY ('') to let rmsynth3d auto-calculate as FWHM/nsamples; otherwise write a bare number like 3.5 (no quotes).
-nsamples = ''                     # -s NSAMPLES (int): Faraday-depth pixels across FWHM of RMSF. Leave EMPTY ('') for rmsynth3d's default; ignored when dphi is set.
+nsamples = 1                      # -s NSAMPLES (float): Faraday-depth pixels across FWHM of RMSF, so dphi = FWHM/nsamples. Default 1 (dphi = FWHM, not Nyquist sampled); use >= 2 for Nyquist sampling, or leave EMPTY ('') for rmsynth3d's own default of 5. Ignored when dphi is set.
 weighttype = 'uniform'            # -w: 'uniform' (default) or 'variance' (needs noise file).
 fit_gaussian_rmsf = True          # -t (bool): fit a Gaussian to the RMSF and write RMSF_FWHM.fits.
 skip_rmsf = False                 # -R (bool): DO NOT enable -- rmclean3d needs the RMSF cube to run.
